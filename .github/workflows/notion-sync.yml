@@ -26,4 +26,17 @@ jobs:
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
         run: |
-          python sync_all_projects.py
+          python sync_all_projects.py > sync_result.txt 2>&1
+
+      - name: Send Email
+        if: always()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_HOST }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USER }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "[Notion Sync] ${{ job.status }}"
+          to: ${{ secrets.MAIL_TO }}
+          from: ${{ secrets.SMTP_USER }}
+          body: file://sync_result.txt
