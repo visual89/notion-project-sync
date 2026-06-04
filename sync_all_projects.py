@@ -1,4 +1,5 @@
 import os
+import time
 from notion_client import Client
 
 TOKEN = os.environ["NOTION_TOKEN"]
@@ -50,6 +51,22 @@ SOURCE_DBS = [
 
 notion = Client(auth=TOKEN)
 
+def notion_call(func, *args, retries=5, delay=3, **kwargs):
+    for attempt in range(1, retries + 1):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            msg = str(e)
+
+            if "502" in msg or "503" in msg or "504" in msg or "Bad Gateway" in msg:
+                print(f"일시 오류 발생, 재시도 {attempt}/{retries}")
+                print(e)
+                time.sleep(delay * attempt)
+                continue
+
+            raise
+
+    raise Exception("Notion API 재시도 실패")
 
 def get_all_pages(data_source_id):
     pages = []
@@ -64,7 +81,7 @@ def get_all_pages(data_source_id):
         if cursor:
             kwargs["start_cursor"] = cursor
 
-        result = notion.data_sources.query(**kwargs)
+        result = notion_call(notion.data_sources.query, **kwargs)
         pages.extend(result["results"])
 
         if not result.get("has_more"):
@@ -105,7 +122,8 @@ def get_team_name(data_source_id):
 
 
 def find_target_page(source_page_id):
-    result = notion.data_sources.query(
+    result = notion_call(
+        notion.data_sources.query,
         data_source_id=TARGET_DB_ID,
         filter={
             "property": "원본 page ID",
