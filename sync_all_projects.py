@@ -1,5 +1,6 @@
 import os
 import time
+import html
 from notion_client import Client
 
 TOKEN = os.environ["NOTION_TOKEN"]
@@ -51,6 +52,7 @@ SOURCE_DBS = [
 
 notion = Client(auth=TOKEN)
 
+
 def notion_call(func, *args, retries=5, delay=3, **kwargs):
     for attempt in range(1, retries + 1):
         try:
@@ -67,6 +69,7 @@ def notion_call(func, *args, retries=5, delay=3, **kwargs):
             raise
 
     raise Exception("Notion API 재시도 실패")
+
 
 def get_all_pages(data_source_id):
     pages = []
@@ -95,8 +98,10 @@ def get_all_pages(data_source_id):
 def get_text(prop):
     if prop["type"] == "title":
         return "".join([t["plain_text"] for t in prop["title"]])
+
     if prop["type"] == "rich_text":
         return "".join([t["plain_text"] for t in prop["rich_text"]])
+
     return ""
 
 
@@ -138,6 +143,113 @@ def find_target_page(source_page_id):
         return result["results"][0]["id"]
 
     return None
+
+
+def build_html_summary(
+    team_stats,
+    total_source_projects,
+    total_added,
+    total_updated,
+    total_deleted
+):
+    rows = ""
+
+    for team_name, stat in team_stats.items():
+        rows += f"""
+            <tr>
+                <td>{html.escape(str(team_name))}</td>
+                <td class="num">{stat["source_count"]}</td>
+                <td class="num">{stat["added"]}</td>
+                <td class="num">{stat["updated"]}</td>
+                <td class="num">{stat["deleted"]}</td>
+            </tr>
+        """
+
+    html_result = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body {{
+            font-family: Arial, 'Malgun Gothic', sans-serif;
+            font-size: 14px;
+            color: #222;
+        }}
+
+        h2 {{
+            margin-bottom: 12px;
+        }}
+
+        table {{
+            border-collapse: collapse;
+            width: 760px;
+            max-width: 100%;
+        }}
+
+        th, td {{
+            border: 1px solid #d9d9d9;
+            padding: 7px 10px;
+            line-height: 1.4;
+        }}
+
+        th {{
+            background-color: #f3f5f7;
+            font-weight: bold;
+            text-align: center;
+        }}
+
+        td {{
+            text-align: left;
+        }}
+
+        .num {{
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }}
+
+        .total-row td {{
+            background-color: #fafafa;
+            font-weight: bold;
+        }}
+
+        .done {{
+            margin-top: 14px;
+            font-weight: bold;
+        }}
+    </style>
+</head>
+<body>
+    <h2>프로젝트 동기화 결과</h2>
+
+    <table>
+        <thead>
+            <tr>
+                <th>팀명</th>
+                <th>원본 프로젝트 수</th>
+                <th>추가</th>
+                <th>수정</th>
+                <th>삭제</th>
+            </tr>
+        </thead>
+        <tbody>
+            {rows}
+            <tr class="total-row">
+                <td>합계</td>
+                <td class="num">{total_source_projects}</td>
+                <td class="num">{total_added}</td>
+                <td class="num">{total_updated}</td>
+                <td class="num">{total_deleted}</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="done">완료</div>
+</body>
+</html>
+"""
+
+    return html_result
 
 
 total_added = 0
@@ -339,21 +451,14 @@ for item in delete_candidates:
 
 
 # ==============================
-# 최종 요약 출력
+# 최종 요약 출력 - HTML 표
 # ==============================
-print("=" * 50)
+html_result = build_html_summary(
+    team_stats=team_stats,
+    total_source_projects=total_source_projects,
+    total_added=total_added,
+    total_updated=total_updated,
+    total_deleted=total_deleted
+)
 
-for team_name, stat in team_stats.items():
-    print("처리중:", team_name)
-    print("원본 전체 프로젝트 수:", stat["source_count"])
-    print()
-    print("추가 :", stat["added"])
-    print("수정 :", stat["updated"])
-    print("삭제 :", stat["deleted"])
-    print("-" * 50)
-
-print("총 프로젝트 수 :", total_source_projects)
-print("총 추가 :", total_added)
-print("총 수정 :", total_updated)
-print("총 삭제 :", total_deleted)
-print("완료")
+print(html_result)
