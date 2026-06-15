@@ -461,12 +461,21 @@ for item in delete_candidates:
 # NO + 숫자열 정렬 + 팀명 맨 뒤
 # ==============================
 
+# ==============================
+# 최종 요약 출력 - GitHub Actions 로그 메일용
+# NO 2자리 + 수량 3자리 + 열 간격 확대
+# ==============================
+
 NO_W = 2
 COUNT_W = 3
+
+SEP = "  |  "   # 열 사이 간격 확대
 
 TEAM_HEADER_GAP = " " * 3
 TEAM_VALUE_GAP = " " * 3
 
+NO_VALUE_GAP = " " * 1
+COUNT_VALUE_GAP = " " * 1
 ADD_VALUE_GAP = " " * 1
 UPDATE_VALUE_GAP = " " * 1
 SKIP_VALUE_GAP = " " * 2
@@ -481,42 +490,60 @@ def fmt_count(value):
 
 print("")
 print("[프로젝트 씽크] 성공")
-print("=" * 100)
+print("=" * 120)
 
 print(
-    f"{'NO':>{NO_W}} | "
-    f"{'개수':>{COUNT_W}} | "
-    f"{'추가':>{COUNT_W}} | "
-    f"{'수정':>{COUNT_W}} | "
-    f"{'건너뜀':>{COUNT_W}} | "
-    f"{'삭제':>{COUNT_W}} | "
+    f"{'NO':>{NO_W}}"
+    f"{SEP}"
+    f"{'개수':>{COUNT_W}}"
+    f"{SEP}"
+    f"{'추가':>{COUNT_W}}"
+    f"{SEP}"
+    f"{'수정':>{COUNT_W}}"
+    f"{SEP}"
+    f"{'건너뜀':>{COUNT_W}}"
+    f"{SEP}"
+    f"{'삭제':>{COUNT_W}}"
+    f"{SEP}"
     f"{TEAM_HEADER_GAP}팀명"
 )
 
-print("-" * 100)
+print("-" * 120)
 
 for idx, (team_name, stat) in enumerate(team_stats.items(), start=1):
     print(
-        f"{idx:02d} | "
-        f"{stat['source_count']:03d} | "
-        f"{ADD_VALUE_GAP}{fmt_count(stat['added'])} | "
-        f"{UPDATE_VALUE_GAP}{fmt_count(stat['updated'])} | "
-        f"{SKIP_VALUE_GAP}{fmt_count(stat['skipped'])} | "
-        f"{DELETE_VALUE_GAP}{fmt_count(stat['deleted'])} | "
+        f"{NO_VALUE_GAP}{idx:02d}"
+        f"{SEP}"
+        f"{COUNT_VALUE_GAP}{stat['source_count']:03d}"
+        f"{SEP}"
+        f"{ADD_VALUE_GAP}{fmt_count(stat['added'])}"
+        f"{SEP}"
+        f"{UPDATE_VALUE_GAP}{fmt_count(stat['updated'])}"
+        f"{SEP}"
+        f"{SKIP_VALUE_GAP}{fmt_count(stat['skipped'])}"
+        f"{SEP}"
+        f"{DELETE_VALUE_GAP}{fmt_count(stat['deleted'])}"
+        f"{SEP}"
         f"{TEAM_VALUE_GAP}{team_name}"
     )
 
-print("-" * 100)
+print("-" * 120)
 
 print(
-    f"{'합계'} | "
-    f"{total_source_projects:03d} | "
-    f"{ADD_VALUE_GAP}{fmt_count(total_added)} | "
-    f"{UPDATE_VALUE_GAP}{fmt_count(total_updated)} | "
-    f"{SKIP_VALUE_GAP}{fmt_count(total_skipped)} | "
-    f"{DELETE_VALUE_GAP}{fmt_count(total_deleted)} | "
+    f"{'합계'}"
+    f"{SEP}"
+    f"{COUNT_VALUE_GAP}{total_source_projects:03d}"
+    f"{SEP}"
+    f"{ADD_VALUE_GAP}{fmt_count(total_added)}"
+    f"{SEP}"
+    f"{UPDATE_VALUE_GAP}{fmt_count(total_updated)}"
+    f"{SEP}"
+    f"{SKIP_VALUE_GAP}{fmt_count(total_skipped)}"
+    f"{SEP}"
+    f"{DELETE_VALUE_GAP}{fmt_count(total_deleted)}"
+    f"{SEP}"
     f"{TEAM_VALUE_GAP}합계"
 )
 
-print("=" * 100)
+print("=" * 120)
 print("완료")
