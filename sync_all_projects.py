@@ -480,7 +480,7 @@ NO_W = 2
 COUNT_W = 3
 
 SEP = "  |  "
-TOTAL_FIRST_SEP = " |  "   # 계 행에서 개수 값부터 왼쪽으로 2칸 이동
+TOTAL_FIRST_SEP = "  |  "   # 계 행에서 개수 값부터 왼쪽으로 2칸 이동
 
 TEAM_HEADER_GAP = " " * 3
 TEAM_VALUE_GAP = " " * 4
@@ -539,7 +539,7 @@ for idx, (team_name, stat) in enumerate(team_stats.items(), start=1):
 print("-" * 120)
 
 print(
-    f"{'계'}"
+    f"{' 계'}"
     f"{TOTAL_FIRST_SEP}"
     f"{COUNT_VALUE_GAP}{fmt_count(total_source_projects)}"
     f"{SEP}"
