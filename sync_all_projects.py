@@ -466,6 +466,11 @@ for item in delete_candidates:
 # NO 2자리 + 수량 3자리 + 열 간격 확대
 # ==============================
 
+# ==============================
+# 최종 요약 출력 - GitHub Actions 로그 메일용
+# NO 2자리 + 수량 3자리 + 열 간격 확대
+# ==============================
+
 NO_W = 2
 COUNT_W = 3
 
@@ -483,8 +488,6 @@ DELETE_VALUE_GAP = " " * 1
 
 
 def fmt_count(value):
-    if value == 0:
-        return "---"
     return f"{value:03d}"
 
 
@@ -514,7 +517,7 @@ for idx, (team_name, stat) in enumerate(team_stats.items(), start=1):
     print(
         f"{NO_VALUE_GAP}{idx:02d}"
         f"{SEP}"
-        f"{COUNT_VALUE_GAP}{stat['source_count']:03d}"
+        f"{COUNT_VALUE_GAP}{fmt_count(stat['source_count'])}"
         f"{SEP}"
         f"{ADD_VALUE_GAP}{fmt_count(stat['added'])}"
         f"{SEP}"
@@ -532,7 +535,7 @@ print("-" * 120)
 print(
     f"{'합계'}"
     f"{SEP}"
-    f"{COUNT_VALUE_GAP}{total_source_projects:03d}"
+    f"{COUNT_VALUE_GAP}{fmt_count(total_source_projects)}"
     f"{SEP}"
     f"{ADD_VALUE_GAP}{fmt_count(total_added)}"
     f"{SEP}"
