@@ -1,6 +1,5 @@
 import os
 import time
-import html
 from notion_client import Client
 
 TOKEN = os.environ["NOTION_TOKEN"]
@@ -143,113 +142,6 @@ def find_target_page(source_page_id):
         return result["results"][0]["id"]
 
     return None
-
-
-def build_html_summary(
-    team_stats,
-    total_source_projects,
-    total_added,
-    total_updated,
-    total_deleted
-):
-    rows = ""
-
-    for team_name, stat in team_stats.items():
-        rows += f"""
-            <tr>
-                <td>{html.escape(str(team_name))}</td>
-                <td class="num">{stat["source_count"]}</td>
-                <td class="num">{stat["added"]}</td>
-                <td class="num">{stat["updated"]}</td>
-                <td class="num">{stat["deleted"]}</td>
-            </tr>
-        """
-
-    html_result = f"""
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <style>
-        body {{
-            font-family: Arial, 'Malgun Gothic', sans-serif;
-            font-size: 14px;
-            color: #222;
-        }}
-
-        h2 {{
-            margin-bottom: 12px;
-        }}
-
-        table {{
-            border-collapse: collapse;
-            width: 760px;
-            max-width: 100%;
-        }}
-
-        th, td {{
-            border: 1px solid #d9d9d9;
-            padding: 7px 10px;
-            line-height: 1.4;
-        }}
-
-        th {{
-            background-color: #f3f5f7;
-            font-weight: bold;
-            text-align: center;
-        }}
-
-        td {{
-            text-align: left;
-        }}
-
-        .num {{
-            text-align: right;
-            font-variant-numeric: tabular-nums;
-        }}
-
-        .total-row td {{
-            background-color: #fafafa;
-            font-weight: bold;
-        }}
-
-        .done {{
-            margin-top: 14px;
-            font-weight: bold;
-        }}
-    </style>
-</head>
-<body>
-    <h2>프로젝트 동기화 결과</h2>
-
-    <table>
-        <thead>
-            <tr>
-                <th>팀명</th>
-                <th>원본 프로젝트 수</th>
-                <th>추가</th>
-                <th>수정</th>
-                <th>삭제</th>
-            </tr>
-        </thead>
-        <tbody>
-            {rows}
-            <tr class="total-row">
-                <td>합계</td>
-                <td class="num">{total_source_projects}</td>
-                <td class="num">{total_added}</td>
-                <td class="num">{total_updated}</td>
-                <td class="num">{total_deleted}</td>
-            </tr>
-        </tbody>
-    </table>
-
-    <div class="done">완료</div>
-</body>
-</html>
-"""
-
-    return html_result
 
 
 total_added = 0
@@ -451,14 +343,58 @@ for item in delete_candidates:
 
 
 # ==============================
-# 최종 요약 출력 - HTML 표
+# 최종 요약 출력 - GitHub Actions 로그 메일용
+# 숫자열 정렬 + 팀명 맨 뒤
 # ==============================
-html_result = build_html_summary(
-    team_stats=team_stats,
-    total_source_projects=total_source_projects,
-    total_added=total_added,
-    total_updated=total_updated,
-    total_deleted=total_deleted
+
+NO_W = 4
+SOURCE_W = 8
+ADD_W = 6
+UPDATE_W = 6
+DELETE_W = 6
+
+TEAM_HEADER_GAP = " " * 3
+TEAM_VALUE_GAP = " " * 3
+
+ADD_VALUE_GAP = " " * 1
+UPDATE_VALUE_GAP = " " * 2
+DELETE_VALUE_GAP = " " * 1
+
+print("")
+print("프로젝트 동기화 결과")
+print("=" * 100)
+
+print(
+    f"{'NO':>{NO_W}} | "
+    f"{'원본':>{SOURCE_W}} | "
+    f"{'추가':>{ADD_W}} | "
+    f"{'수정':>{UPDATE_W}} | "
+    f"{'삭제':>{DELETE_W}} | "
+    f"{TEAM_HEADER_GAP}팀명"
 )
 
-print(html_result)
+print("-" * 100)
+
+for idx, (team_name, stat) in enumerate(team_stats.items(), start=1):
+    print(
+        f"{idx:>{NO_W}} | "
+        f"{stat['source_count']:>{SOURCE_W}} | "
+        f"{ADD_VALUE_GAP}{stat['added']:>{ADD_W}} | "
+        f"{UPDATE_VALUE_GAP}{stat['updated']:>{UPDATE_W}} | "
+        f"{DELETE_VALUE_GAP}{stat['deleted']:>{DELETE_W}} | "
+        f"{TEAM_VALUE_GAP}{team_name}"
+    )
+
+print("-" * 100)
+
+print(
+    f"{'합계':>{NO_W}} | "
+    f"{total_source_projects:>{SOURCE_W}} | "
+    f"{ADD_VALUE_GAP}{total_added:>{ADD_W}} | "
+    f"{UPDATE_VALUE_GAP}{total_updated:>{UPDATE_W}} | "
+    f"{DELETE_VALUE_GAP}{total_deleted:>{DELETE_W}} | "
+    f"{TEAM_VALUE_GAP}합계"
+)
+
+print("=" * 100)
+print("완료")
