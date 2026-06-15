@@ -499,7 +499,7 @@ def fmt_count(value):
 
 print("")
 print("[프로젝트 씽크] 성공")
-print("=" * 60)
+print("=" * 50)
 
 print(
     f"{'NO':>{NO_W}}"
@@ -517,7 +517,7 @@ print(
     f"{TEAM_HEADER_GAP}팀명"
 )
 
-print("-" * 90)
+print("-" * 85)
 
 for idx, (team_name, stat) in enumerate(team_stats.items(), start=1):
     print(
@@ -536,7 +536,7 @@ for idx, (team_name, stat) in enumerate(team_stats.items(), start=1):
         f"{TEAM_VALUE_GAP}{team_name}"
     )
 
-print("-" * 90)
+print("-" * 85)
 
 print(
     f"{' 계'}"
@@ -554,5 +554,5 @@ print(
     f"{TEAM_VALUE_GAP}"
 )
 
-print("=" * 60)
+print("=" * 50)
 
