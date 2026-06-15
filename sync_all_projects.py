@@ -477,14 +477,14 @@ COUNT_W = 3
 SEP = "  |  "   # 열 사이 간격 확대
 
 TEAM_HEADER_GAP = " " * 3
-TEAM_VALUE_GAP = " " * 3
+TEAM_VALUE_GAP = " " * 4
 
 NO_VALUE_GAP = " " * 1
-COUNT_VALUE_GAP = " " * 1
-ADD_VALUE_GAP = " " * 1
-UPDATE_VALUE_GAP = " " * 1
-SKIP_VALUE_GAP = " " * 2
-DELETE_VALUE_GAP = " " * 1
+COUNT_VALUE_GAP = " " * 2
+ADD_VALUE_GAP = " " * 2
+UPDATE_VALUE_GAP = " " * 2
+SKIP_VALUE_GAP = " " * 3
+DELETE_VALUE_GAP = " " * 2
 
 
 def fmt_count(value):
