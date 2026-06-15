@@ -551,7 +551,7 @@ print(
     f"{SEP}"
     f"{DELETE_VALUE_GAP}{fmt_count(total_deleted)}"
     f"{SEP}"
-    f"{TEAM_VALUE_GAP}계"
+    f"{TEAM_VALUE_GAP}"
 )
 
 print("=" * 120)
