@@ -1,4 +1,4 @@
-name: Notion Project Sync
+name: 프로젝트 씽크
 
 on:
   schedule:
@@ -28,15 +28,36 @@ jobs:
         run: |
           python sync_all_projects.py > sync_result.txt 2>&1
 
-      - name: Send Email
+      - name: Prepare Result File
         if: always()
+        run: |
+          if [ ! -f sync_result.txt ]; then
+            echo "[프로젝트 씽크] 실패" > sync_result.txt
+            echo "sync_result.txt 파일이 생성되기 전에 오류가 발생했습니다." >> sync_result.txt
+          fi
+
+      - name: Send Success Email
+        if: success()
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: ${{ secrets.SMTP_HOST }}
           server_port: ${{ secrets.SMTP_PORT }}
           username: ${{ secrets.SMTP_USER }}
           password: ${{ secrets.SMTP_PASSWORD }}
-          subject: "[Notion Sync] ${{ job.status }}"
+          subject: "[프로젝트 씽크] 성공"
+          to: ${{ secrets.MAIL_TO }}
+          from: ${{ secrets.SMTP_USER }}
+          body: file://sync_result.txt
+
+      - name: Send Failure Email
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_HOST }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USER }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "[프로젝트 씽크] 실패"
           to: ${{ secrets.MAIL_TO }}
           from: ${{ secrets.SMTP_USER }}
           body: file://sync_result.txt
