@@ -461,59 +461,62 @@ for item in delete_candidates:
 # NO + 숫자열 정렬 + 팀명 맨 뒤
 # ==============================
 
-NO_W = 4
-SOURCE_W = 8
-ADD_W = 6
-UPDATE_W = 6
-SKIP_W = 8
-DELETE_W = 6
+NO_W = 2
+COUNT_W = 3
 
 TEAM_HEADER_GAP = " " * 3
 TEAM_VALUE_GAP = " " * 3
 
 ADD_VALUE_GAP = " " * 1
-UPDATE_VALUE_GAP = " " * 2
-SKIP_VALUE_GAP = " " * 1
+UPDATE_VALUE_GAP = " " * 1
+SKIP_VALUE_GAP = " " * 2
 DELETE_VALUE_GAP = " " * 1
 
+
+def fmt_count(value):
+    if value == 0:
+        return "---"
+    return f"{value:03d}"
+
+
 print("")
-print("프로젝트 동기화 결과")
-print("=" * 112)
+print("[프로젝트 씽크] 성공")
+print("=" * 100)
 
 print(
     f"{'NO':>{NO_W}} | "
-    f"{'원본':>{SOURCE_W}} | "
-    f"{'추가':>{ADD_W}} | "
-    f"{'수정':>{UPDATE_W}} | "
-    f"{'건너뜀':>{SKIP_W}} | "
-    f"{'삭제':>{DELETE_W}} | "
+    f"{'개수':>{COUNT_W}} | "
+    f"{'추가':>{COUNT_W}} | "
+    f"{'수정':>{COUNT_W}} | "
+    f"{'건너뜀':>{COUNT_W}} | "
+    f"{'삭제':>{COUNT_W}} | "
     f"{TEAM_HEADER_GAP}팀명"
 )
 
-print("-" * 112)
+print("-" * 100)
 
 for idx, (team_name, stat) in enumerate(team_stats.items(), start=1):
     print(
-        f"{idx:>{NO_W}} | "
-        f"{stat['source_count']:>{SOURCE_W}} | "
-        f"{ADD_VALUE_GAP}{stat['added']:>{ADD_W}} | "
-        f"{UPDATE_VALUE_GAP}{stat['updated']:>{UPDATE_W}} | "
-        f"{SKIP_VALUE_GAP}{stat['skipped']:>{SKIP_W}} | "
-        f"{DELETE_VALUE_GAP}{stat['deleted']:>{DELETE_W}} | "
+        f"{idx:02d} | "
+        f"{stat['source_count']:03d} | "
+        f"{ADD_VALUE_GAP}{fmt_count(stat['added'])} | "
+        f"{UPDATE_VALUE_GAP}{fmt_count(stat['updated'])} | "
+        f"{SKIP_VALUE_GAP}{fmt_count(stat['skipped'])} | "
+        f"{DELETE_VALUE_GAP}{fmt_count(stat['deleted'])} | "
         f"{TEAM_VALUE_GAP}{team_name}"
     )
 
-print("-" * 112)
+print("-" * 100)
 
 print(
-    f"{'합계':>{NO_W}} | "
-    f"{total_source_projects:>{SOURCE_W}} | "
-    f"{ADD_VALUE_GAP}{total_added:>{ADD_W}} | "
-    f"{UPDATE_VALUE_GAP}{total_updated:>{UPDATE_W}} | "
-    f"{SKIP_VALUE_GAP}{total_skipped:>{SKIP_W}} | "
-    f"{DELETE_VALUE_GAP}{total_deleted:>{DELETE_W}} | "
+    f"{'합계'} | "
+    f"{total_source_projects:03d} | "
+    f"{ADD_VALUE_GAP}{fmt_count(total_added)} | "
+    f"{UPDATE_VALUE_GAP}{fmt_count(total_updated)} | "
+    f"{SKIP_VALUE_GAP}{fmt_count(total_skipped)} | "
+    f"{DELETE_VALUE_GAP}{fmt_count(total_deleted)} | "
     f"{TEAM_VALUE_GAP}합계"
 )
 
-print("=" * 112)
+print("=" * 100)
 print("완료")
