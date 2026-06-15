@@ -109,9 +109,17 @@ def get_title(page):
 
 
 def get_team_name(data_source_id):
-    ds = notion.data_sources.retrieve(data_source_id=data_source_id)
+    ds = notion_call(
+        notion.data_sources.retrieve,
+        data_source_id=data_source_id
+    )
+
     parent_db_id = ds["parent"]["database_id"]
-    db = notion.databases.retrieve(database_id=parent_db_id)
+
+    db = notion_call(
+        notion.databases.retrieve,
+        database_id=parent_db_id
+    )
 
     title = "".join([t["plain_text"] for t in db["title"]])
 
@@ -125,33 +133,124 @@ def get_team_name(data_source_id):
     )
 
 
-def find_target_page(source_page_id):
-    result = notion_call(
-        notion.data_sources.query,
-        data_source_id=TARGET_DB_ID,
-        filter={
-            "property": "원본 page ID",
-            "rich_text": {
-                "equals": source_page_id
-            }
-        },
-        page_size=1
-    )
+def get_people_ids(prop):
+    return [person["id"] for person in prop.get("people", [])]
 
-    if result["results"]:
-        return result["results"][0]["id"]
+
+def get_prop_compare_value(prop):
+    """
+    비교용 값 추출.
+    이 함수는 현재 코드에서 복사하는 속성만 비교하기 위한 용도.
+    """
+    prop_type = prop["type"]
+
+    if prop_type == "title":
+        return "".join([t["plain_text"] for t in prop["title"]])
+
+    if prop_type == "rich_text":
+        return "".join([t["plain_text"] for t in prop["rich_text"]])
+
+    if prop_type == "status":
+        if prop["status"]:
+            return prop["status"]["name"]
+        return None
+
+    if prop_type == "select":
+        if prop["select"]:
+            return prop["select"]["name"]
+        return None
+
+    if prop_type == "date":
+        return prop["date"]
+
+    if prop_type == "people":
+        return get_people_ids(prop)
 
     return None
 
 
+def get_new_prop_compare_value(prop):
+    """
+    새로 업데이트하려는 new_props 기준 비교값 추출.
+    """
+    if "title" in prop:
+        return "".join([t["text"]["content"] for t in prop["title"]])
+
+    if "rich_text" in prop:
+        return "".join([t["text"]["content"] for t in prop["rich_text"]])
+
+    if "status" in prop:
+        return prop["status"]["name"]
+
+    if "select" in prop:
+        return prop["select"]["name"]
+
+    if "date" in prop:
+        return prop["date"]
+
+    if "people" in prop:
+        return [person["id"] for person in prop["people"]]
+
+    return None
+
+
+def is_same_properties(target_page, new_props):
+    """
+    기존 통합 DB 페이지와 새로 반영할 속성이 같은지 비교.
+    new_props에 들어있는 속성만 비교한다.
+    """
+    target_props = target_page["properties"]
+
+    for prop_name, new_prop in new_props.items():
+        if prop_name not in target_props:
+            return False
+
+        old_value = get_prop_compare_value(target_props[prop_name])
+        new_value = get_new_prop_compare_value(new_prop)
+
+        if old_value != new_value:
+            return False
+
+    return True
+
+
+def make_target_page_map(target_pages):
+    """
+    통합 DB 전체 페이지를 원본 page ID 기준으로 딕셔너리화.
+    기존처럼 원본 page ID로 매번 query하지 않기 때문에 훨씬 빠르다.
+    """
+    result = {}
+
+    for page in target_pages:
+        props = page["properties"]
+
+        if "원본 page ID" not in props:
+            continue
+
+        source_page_id = get_text(props["원본 page ID"])
+
+        if source_page_id:
+            result[source_page_id] = page
+
+    return result
+
+
 total_added = 0
 total_updated = 0
+total_skipped = 0
 total_deleted = 0
 total_source_projects = 0
 
 all_source_page_ids = set()
 
 team_stats = {}
+
+# ==============================
+# 통합 DB를 먼저 한 번만 읽기
+# ==============================
+target_pages_before_sync = get_all_pages(TARGET_DB_ID)
+target_page_map = make_target_page_map(target_pages_before_sync)
+
 
 # ==============================
 # 원본 DB → 통합 DB 동기화
@@ -171,6 +270,7 @@ for source in SOURCE_DBS:
         "source_count": len(all_pages),
         "added": 0,
         "updated": 0,
+        "skipped": 0,
         "deleted": 0
     }
 
@@ -181,7 +281,6 @@ for source in SOURCE_DBS:
 
     for page in pages:
         source_page_id = page["id"]
-        target_page_id = find_target_page(source_page_id)
 
         props = page["properties"]
         project_name = get_title(page)
@@ -257,21 +356,36 @@ for source in SOURCE_DBS:
             }
 
         try:
-            if target_page_id:
-                notion.pages.update(
-                    page_id=target_page_id,
-                    properties=new_props
-                )
-                total_updated += 1
-                team_stats[team_name]["updated"] += 1
+            target_page = target_page_map.get(source_page_id)
+
+            if target_page:
+                target_page_id = target_page["id"]
+
+                if is_same_properties(target_page, new_props):
+                    total_skipped += 1
+                    team_stats[team_name]["skipped"] += 1
+
+                else:
+                    notion_call(
+                        notion.pages.update,
+                        page_id=target_page_id,
+                        properties=new_props
+                    )
+
+                    total_updated += 1
+                    team_stats[team_name]["updated"] += 1
 
             else:
-                notion.pages.create(
+                created_page = notion_call(
+                    notion.pages.create,
                     parent={
                         "data_source_id": TARGET_DB_ID
                     },
                     properties=new_props
                 )
+
+                target_page_map[source_page_id] = created_page
+
                 total_added += 1
                 team_stats[team_name]["added"] += 1
 
@@ -286,11 +400,9 @@ for source in SOURCE_DBS:
 # ==============================
 # 삭제 대상 확인 및 보관 처리
 # ==============================
-target_pages = get_all_pages(TARGET_DB_ID)
-
 delete_candidates = []
 
-for page in target_pages:
+for page in target_pages_before_sync:
     props = page["properties"]
 
     if "원본 page ID" not in props:
@@ -315,7 +427,8 @@ for page in target_pages:
 
 for item in delete_candidates:
     try:
-        notion.pages.update(
+        notion_call(
+            notion.pages.update,
             page_id=item["target_page_id"],
             archived=True
         )
@@ -329,6 +442,7 @@ for item in delete_candidates:
                 "source_count": 0,
                 "added": 0,
                 "updated": 0,
+                "skipped": 0,
                 "deleted": 0
             }
 
@@ -344,13 +458,14 @@ for item in delete_candidates:
 
 # ==============================
 # 최종 요약 출력 - GitHub Actions 로그 메일용
-# 숫자열 정렬 + 팀명 맨 뒤
+# NO + 숫자열 정렬 + 팀명 맨 뒤
 # ==============================
 
 NO_W = 4
 SOURCE_W = 8
 ADD_W = 6
 UPDATE_W = 6
+SKIP_W = 8
 DELETE_W = 6
 
 TEAM_HEADER_GAP = " " * 3
@@ -358,22 +473,24 @@ TEAM_VALUE_GAP = " " * 3
 
 ADD_VALUE_GAP = " " * 1
 UPDATE_VALUE_GAP = " " * 2
+SKIP_VALUE_GAP = " " * 1
 DELETE_VALUE_GAP = " " * 1
 
 print("")
 print("프로젝트 동기화 결과")
-print("=" * 100)
+print("=" * 112)
 
 print(
     f"{'NO':>{NO_W}} | "
     f"{'원본':>{SOURCE_W}} | "
     f"{'추가':>{ADD_W}} | "
     f"{'수정':>{UPDATE_W}} | "
+    f"{'건너뜀':>{SKIP_W}} | "
     f"{'삭제':>{DELETE_W}} | "
     f"{TEAM_HEADER_GAP}팀명"
 )
 
-print("-" * 100)
+print("-" * 112)
 
 for idx, (team_name, stat) in enumerate(team_stats.items(), start=1):
     print(
@@ -381,20 +498,22 @@ for idx, (team_name, stat) in enumerate(team_stats.items(), start=1):
         f"{stat['source_count']:>{SOURCE_W}} | "
         f"{ADD_VALUE_GAP}{stat['added']:>{ADD_W}} | "
         f"{UPDATE_VALUE_GAP}{stat['updated']:>{UPDATE_W}} | "
+        f"{SKIP_VALUE_GAP}{stat['skipped']:>{SKIP_W}} | "
         f"{DELETE_VALUE_GAP}{stat['deleted']:>{DELETE_W}} | "
         f"{TEAM_VALUE_GAP}{team_name}"
     )
 
-print("-" * 100)
+print("-" * 112)
 
 print(
     f"{'합계':>{NO_W}} | "
     f"{total_source_projects:>{SOURCE_W}} | "
     f"{ADD_VALUE_GAP}{total_added:>{ADD_W}} | "
     f"{UPDATE_VALUE_GAP}{total_updated:>{UPDATE_W}} | "
+    f"{SKIP_VALUE_GAP}{total_skipped:>{SKIP_W}} | "
     f"{DELETE_VALUE_GAP}{total_deleted:>{DELETE_W}} | "
     f"{TEAM_VALUE_GAP}합계"
 )
 
-print("=" * 100)
+print("=" * 112)
 print("완료")
