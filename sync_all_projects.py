@@ -471,10 +471,16 @@ for item in delete_candidates:
 # NO 2자리 + 수량 3자리 + 열 간격 확대
 # ==============================
 
+# ==============================
+# 최종 요약 출력 - GitHub Actions 로그 메일용
+# NO 2자리 + 수량 3자리 + 열 간격 확대
+# ==============================
+
 NO_W = 2
 COUNT_W = 3
 
-SEP = "  |  "   # 열 사이 간격 확대
+SEP = "  |  "
+TOTAL_FIRST_SEP = "|  "   # 합계 행에서 개수 값부터 왼쪽으로 2칸 이동
 
 TEAM_HEADER_GAP = " " * 3
 TEAM_VALUE_GAP = " " * 4
@@ -534,7 +540,7 @@ print("-" * 120)
 
 print(
     f"{'합계'}"
-    f"{SEP}"
+    f"{TOTAL_FIRST_SEP}"
     f"{COUNT_VALUE_GAP}{fmt_count(total_source_projects)}"
     f"{SEP}"
     f"{ADD_VALUE_GAP}{fmt_count(total_added)}"
