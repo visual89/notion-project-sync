@@ -142,28 +142,38 @@ def find_target_page(source_page_id):
 
 total_added = 0
 total_updated = 0
+total_deleted = 0
+total_source_projects = 0
+
 all_source_page_ids = set()
 
+team_stats = {}
+
+# ==============================
+# 원본 DB → 통합 DB 동기화
+# ==============================
 for source in SOURCE_DBS:
     source_id = source["id"]
     team_name = get_team_name(source_id)
-
-    print("=" * 50)
-    print("처리중:", team_name)
 
     all_pages = get_all_pages(source_id)
 
     for p in all_pages:
         all_source_page_ids.add(p["id"])
 
-    print("원본 전체 프로젝트 수:", len(all_pages))
+    total_source_projects += len(all_pages)
+
+    team_stats[team_name] = {
+        "source_count": len(all_pages),
+        "added": 0,
+        "updated": 0,
+        "deleted": 0
+    }
 
     if TEST_LIMIT_PER_DB is None:
         pages = all_pages
     else:
         pages = all_pages[:TEST_LIMIT_PER_DB]
-
-    print("이번 실행 처리 수:", len(pages))
 
     for page in pages:
         source_page_id = page["id"]
@@ -218,7 +228,7 @@ for source in SOURCE_DBS:
             new_props["종료일"] = {
                 "date": props["종료일"]["date"]
             }
-            # 중요도 복사
+
         if "중요도" in props and props["중요도"]["select"]:
             new_props["중요도"] = {
                 "select": {
@@ -226,7 +236,6 @@ for source in SOURCE_DBS:
                 }
             }
 
-        # 담당자 복사
         if "담당자" in props and props["담당자"]["people"]:
             new_props["담당자"] = {
                 "people": [
@@ -235,7 +244,6 @@ for source in SOURCE_DBS:
                 ]
             }
 
-        # 요청자 복사
         if "요청자" in props and props["요청자"]["people"]:
             new_props["요청자"] = {
                 "people": [
@@ -251,7 +259,8 @@ for source in SOURCE_DBS:
                     properties=new_props
                 )
                 total_updated += 1
-                print("수정:", project_name)
+                team_stats[team_name]["updated"] += 1
+
             else:
                 notion.pages.create(
                     parent={
@@ -260,19 +269,19 @@ for source in SOURCE_DBS:
                     properties=new_props
                 )
                 total_added += 1
-                print("추가:", project_name)
+                team_stats[team_name]["added"] += 1
 
         except Exception as e:
-            print("오류 발생:", project_name)
+            print("오류 발생:", team_name, "/", project_name)
             print(e)
             print("계속 진행")
             print("-" * 30)
             continue
 
 
-print("=" * 50)
-print("삭제 예정 확인")
-
+# ==============================
+# 삭제 대상 확인 및 보관 처리
+# ==============================
 target_pages = get_all_pages(TARGET_DB_ID)
 
 delete_candidates = []
@@ -286,29 +295,65 @@ for page in target_pages:
     source_page_id = get_text(props["원본 page ID"])
     project_name = get_text(props["프로젝트 이름"])
 
+    if "팀" in props:
+        team_name = get_text(props["팀"])
+    else:
+        team_name = "팀 정보 없음"
+
     if source_page_id and source_page_id not in all_source_page_ids:
         delete_candidates.append({
             "project_name": project_name,
             "target_page_id": page["id"],
-            "source_page_id": source_page_id
+            "source_page_id": source_page_id,
+            "team_name": team_name
         })
 
-print("삭제 대상 개수:", len(delete_candidates))
 
 for item in delete_candidates:
+    try:
+        notion.pages.update(
+            page_id=item["target_page_id"],
+            archived=True
+        )
 
-    print("삭제:", item["project_name"])
+        total_deleted += 1
 
-    notion.pages.update(
-        page_id=item["target_page_id"],
-        archived=True
-    )
+        team_name = item["team_name"]
 
-    print("삭제 완료")
-    print("-" * 30)
+        if team_name not in team_stats:
+            team_stats[team_name] = {
+                "source_count": 0,
+                "added": 0,
+                "updated": 0,
+                "deleted": 0
+            }
 
+        team_stats[team_name]["deleted"] += 1
+
+    except Exception as e:
+        print("삭제 오류 발생:", item["team_name"], "/", item["project_name"])
+        print(e)
+        print("계속 진행")
+        print("-" * 30)
+        continue
+
+
+# ==============================
+# 최종 요약 출력
+# ==============================
 print("=" * 50)
-print("총 추가:", total_added)
-print("총 수정:", total_updated)
-print("총 삭제:", len(delete_candidates))
+
+for team_name, stat in team_stats.items():
+    print("처리중:", team_name)
+    print("원본 전체 프로젝트 수:", stat["source_count"])
+    print()
+    print("추가 :", stat["added"])
+    print("수정 :", stat["updated"])
+    print("삭제 :", stat["deleted"])
+    print("-" * 50)
+
+print("총 프로젝트 수 :", total_source_projects)
+print("총 추가 :", total_added)
+print("총 수정 :", total_updated)
+print("총 삭제 :", total_deleted)
 print("완료")
