@@ -47,6 +47,7 @@ SOURCE_DBS = [
     {"id": "5812efd1-adb1-4d63-99b0-e9b8624da86a"},
     {"id": "330cbb1d-cbaa-80ce-8f8e-000be0dcc297"},
     {"id": "366cbb1d-cbaa-807a-893c-000b351ef000"},
+    {"id": "359cbb1d-cbaa-82b2-b19a-07938394404e"},
 ]
 
 notion = Client(auth=TOKEN)
