@@ -151,11 +151,6 @@ def get_prop_compare_value(prop):
     if prop_type == "rich_text":
         return "".join([t["plain_text"] for t in prop["rich_text"]])
 
-    if prop_type == "status":
-        if prop["status"]:
-            return prop["status"]["name"]
-        return None
-
     if prop_type == "select":
         if prop["select"]:
             return prop["select"]["name"]
@@ -315,13 +310,6 @@ for source in SOURCE_DBS:
                 ]
             }
         }
-
-        if "상태" in props and props["상태"]["status"]:
-            new_props["상태"] = {
-                "status": {
-                    "name": props["상태"]["status"]["name"]
-                }
-            }
 
         if "시작일" in props and props["시작일"]["date"]:
             new_props["시작일"] = {
