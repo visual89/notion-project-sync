@@ -111,7 +111,7 @@ SOURCE_DBS = [
     {"id": "366cbb1d-cbaa-807a-97dd-000b3aca14a1", "team": "원가팀"},
     {"id": "366cbb1d-cbaa-806c-a5b9-000b40f6348b", "team": "기술영업팀"},
     {"id": "366cbb1d-cbaa-8066-bde5-000bbc28496e", "team": "설비기술팀"},
-    {"id": "366cbb1d-cbaa-80b7-98ba-000bbd1f329c", "team": "합금생산팀"},
+    {"id": "366cbb1d-cbaa-80b7-98ba-000bbd1f329c", "team": "한국생산팀"},
     {"id": "366cbb1d-cbaa-8097-91ac-000baf3183db", "team": "대구가공생산팀"},
     {"id": "366cbb1d-cbaa-806a-921b-000b65089f3d", "team": "대구품질경영팀"},
     {"id": "366cbb1d-cbaa-80fe-b40e-000b174d2241", "team": "소재개발팀"},
@@ -733,7 +733,7 @@ def properties_changed(existing_page, desired_props):
 
 
 # =========================================================
-# 페이지 생성 / 수정
+# 페이지 생성 / 수정 / 삭제
 # =========================================================
 
 def create_page_in_data_source(data_source_id, properties):
@@ -770,12 +770,51 @@ def update_target_page(page_id, properties):
     )
 
 
+def archive_page(page_id):
+    sleep_api()
+    return notion.pages.update(
+        page_id=page_id,
+        archived=True,
+    )
+
+
 # =========================================================
-# 결과 DB 저장
+# 결과 DB 초기화 후 저장
 # =========================================================
+
+def clear_result_data_source():
+    """
+    결과 DB에 기존 생성되어 있던 페이지를 전부 휴지통 처리.
+    Notion API는 완전 삭제가 아니라 archived=True 방식으로 처리함.
+    """
+
+    print("[INFO] 결과 DB 기존 페이지 삭제 시작")
+
+    pages = query_all_pages(RESULT_DATA_SOURCE_ID)
+
+    deleted_count = 0
+
+    for page in pages:
+        page_id = page.get("id")
+
+        if not page_id:
+            continue
+
+        try:
+            archive_page(page_id)
+            deleted_count += 1
+        except Exception as e:
+            print(f"[WARN] 결과 DB 기존 페이지 삭제 실패: {page_id} / {e}")
+            continue
+
+    print(f"[INFO] 결과 DB 기존 페이지 삭제 완료: {deleted_count}건")
+
 
 def build_result_properties(row):
     props = {
+        "No": {
+            "number": safe_int(row.get("no"))
+        },
         "날짜": {
             "date": {
                 "start": today_kst_date()
@@ -799,7 +838,7 @@ def build_result_properties(row):
         "수정": {
             "number": safe_int(row.get("updated"))
         },
-        "미반영": {
+        "건너뜀": {
             "number": safe_int(row.get("skipped"))
         },
         "삭제": {
@@ -827,12 +866,27 @@ def create_result_page(row):
 
 
 def save_result_rows_to_notion(result_rows):
-    for row in result_rows:
+    """
+    결과 DB를 먼저 비우고, 이번 실행 결과만 새로 생성.
+    """
+
+    clear_result_data_source()
+
+    print("[INFO] 결과 DB 신규 페이지 생성 시작")
+
+    created_count = 0
+
+    for index, row in enumerate(result_rows, start=1):
+        row["no"] = index
+
         try:
             create_result_page(row)
+            created_count += 1
         except Exception as e:
             print(f"[WARN] 결과 DB 저장 실패: {row.get('team_name')} / {e}")
             continue
+
+    print(f"[INFO] 결과 DB 신규 페이지 생성 완료: {created_count}건")
 
 
 # =========================================================
@@ -844,11 +898,12 @@ def print_result_table(result_rows):
     print("======================================")
     print("프로젝트 통합 결과")
     print("======================================")
-    print("팀명 | 프로젝트 수 | 추가 | 수정 | 미반영 | 삭제 | 최신 편집 일시")
+    print("No | 팀명 | 프로젝트 수 | 추가 | 수정 | 건너뜀 | 삭제 | 최신 편집 일시")
     print("--------------------------------------")
 
-    for row in result_rows:
+    for index, row in enumerate(result_rows, start=1):
         print(
+            f"{index} | "
             f"{row.get('team_name', '')} | "
             f"{row.get('count', 0)} | "
             f"{row.get('added', 0)} | "
@@ -885,6 +940,7 @@ def main():
         team_name = source_db["team"]
 
         row = {
+            "no": 0,
             "team_name": team_name,
             "source_db_id": source_data_source_id,
             "count": 0,
