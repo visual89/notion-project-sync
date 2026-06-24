@@ -1,6 +1,9 @@
 import os
 import time
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from notion_client import Client
 from notion_client.errors import APIResponseError
 
@@ -8,7 +11,7 @@ from notion_client.errors import APIResponseError
 # =========================================================
 # 로그 설정
 # =========================================================
-# Notion SDK의 WARNING 로그가 메일 결과물에 섞이지 않도록 숨김
+# Notion SDK의 WARNING 로그가 결과물에 섞이지 않도록 숨김
 logging.getLogger("notion_client").setLevel(logging.ERROR)
 
 
@@ -21,8 +24,16 @@ TOKEN = os.environ["NOTION_TOKEN"]
 # 통합 프로젝트 DB / Data Source ID
 TARGET_DB_ID = "395cbb1d-cbaa-829c-a5a4-878f6a7b9b7d"
 
+# 실행 결과 저장 DB
+RESULT_DB_ID = "389cbb1d-cbaa-801b-9855-000b71234b6f"
+
 # 테스트할 때만 숫자 입력. 전체 실행은 None.
 TEST_LIMIT_PER_DB = None
+
+# Notion API 과호출 방지
+API_SLEEP_SEC = 0.05
+
+KST = ZoneInfo("Asia/Seoul")
 
 # 더 이상 취합하지 않을 속성
 EXCLUDED_PROPERTIES = {
@@ -65,6 +76,15 @@ SOURCE_DB_NAME_PROP_CANDIDATES = [
     "원본 DB명",
     "source_db",
     "Source DB",
+]
+
+LAST_EDITED_TIME_PROP_CANDIDATES = [
+    "최종 편집 일시",
+    "최종 편집일시",
+    "최종 수정 일시",
+    "최종수정일시",
+    "last_edited_time",
+    "Last Edited Time",
 ]
 
 
@@ -110,7 +130,6 @@ SOURCE_DBS = [
     {"id": "359cbb1d-cbaa-82b2-b19a-07938394404e", "team": "선행기술팀"},
 ]
 
-
 notion = Client(auth=TOKEN)
 
 
@@ -118,824 +137,709 @@ notion = Client(auth=TOKEN)
 # 공통 함수
 # =========================================================
 
-def is_object_not_found_error(e):
-    code = str(getattr(e, "code", "")).lower()
-    status = getattr(e, "status", None)
-    msg = str(e).lower()
-
-    return (
-        "object_not_found" in code
-        or "objectnotfound" in code
-        or status == 404
-        or "could not find database" in msg
-        or "could not find data source" in msg
-        or "404 not found" in msg
-    )
+def sleep_api():
+    time.sleep(API_SLEEP_SEC)
 
 
-def notion_call(func, *args, retries=5, delay=3, **kwargs):
-    for attempt in range(1, retries + 1):
-        try:
-            return func(*args, **kwargs)
-
-        except APIResponseError as e:
-            if is_object_not_found_error(e):
-                raise
-
-            status = getattr(e, "status", None)
-            msg = str(e)
-
-            if status == 429 or "rate_limited" in msg.lower():
-                time.sleep(delay)
-                continue
-
-            if status in [500, 502, 503, 504]:
-                time.sleep(delay)
-                continue
-
-            raise
-
-        except Exception:
-            if attempt < retries:
-                time.sleep(delay)
-                continue
-            raise
+def now_kst():
+    return datetime.now(KST)
 
 
-def first_existing_property_name(schema, candidates):
+def today_kst_date():
+    return now_kst().date().isoformat()
+
+
+def now_kst_iso():
+    return now_kst().isoformat()
+
+
+def safe_int(value):
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+
+def is_object_not_found_error(error):
+    try:
+        return error.code == "object_not_found"
+    except Exception:
+        return False
+
+
+def get_first_existing_prop_name(schema, candidates):
     for name in candidates:
         if name in schema:
             return name
     return None
 
 
-def find_title_property_name(schema):
-    for name, prop in schema.items():
-        if prop.get("type") == "title":
+def get_title_property_name(schema):
+    for name, info in schema.items():
+        if info.get("type") == "title":
             return name
     return None
 
 
-def plain_text_from_text_array(items):
-    if not items:
-        return ""
-    return "".join(item.get("plain_text", "") for item in items).strip()
-
-
-def make_text_array(text):
-    text = "" if text is None else str(text)
-
-    if len(text) > 2000:
-        text = text[:2000]
-
-    return [
-        {
-            "text": {
-                "content": text
-            }
-        }
-    ]
-
-
-def get_page_title(page):
-    props = page.get("properties", {})
-
-    for _, prop_value in props.items():
-        if prop_value.get("type") == "title":
-            title = plain_text_from_text_array(prop_value.get("title", []))
-            return title if title else "제목 없음"
-
-    return "제목 없음"
-
-
-def get_rich_text_value(prop):
-    if not prop:
-        return ""
-
-    prop_type = prop.get("type")
-
-    if prop_type == "rich_text":
-        return plain_text_from_text_array(prop.get("rich_text", []))
-
-    if prop_type == "title":
-        return plain_text_from_text_array(prop.get("title", []))
-
-    return ""
-
-
 # =========================================================
-# Data source 조회
+# Notion 조회 함수
 # =========================================================
 
-def retrieve_data_source(data_source_id):
-    return notion_call(
-        notion.data_sources.retrieve,
-        data_source_id=data_source_id
-    )
+def retrieve_database_schema(database_id):
+    sleep_api()
+    db = notion.databases.retrieve(database_id=database_id)
+    return db.get("properties", {})
 
 
-def get_data_source_schema(data_source_id):
-    data_source = retrieve_data_source(data_source_id)
-    return data_source.get("properties", {})
-
-
-def get_all_pages(data_source_id):
-    pages = []
+def query_all_pages(database_id):
+    results = []
     start_cursor = None
 
     while True:
-        kwargs = {
-            "data_source_id": data_source_id,
+        payload = {
+            "database_id": database_id,
             "page_size": 100,
         }
 
         if start_cursor:
-            kwargs["start_cursor"] = start_cursor
+            payload["start_cursor"] = start_cursor
 
-        result = notion_call(notion.data_sources.query, **kwargs)
+        sleep_api()
+        response = notion.databases.query(**payload)
 
-        pages.extend(result.get("results", []))
+        results.extend(response.get("results", []))
 
-        if not result.get("has_more"):
+        if TEST_LIMIT_PER_DB is not None and len(results) >= TEST_LIMIT_PER_DB:
+            return results[:TEST_LIMIT_PER_DB]
+
+        if not response.get("has_more"):
             break
 
-        start_cursor = result.get("next_cursor")
+        start_cursor = response.get("next_cursor")
 
-    if TEST_LIMIT_PER_DB is not None:
-        return pages[:TEST_LIMIT_PER_DB]
-
-    return pages
+    return results
 
 
 # =========================================================
-# 속성 변환
+# 속성 값 추출 함수
 # =========================================================
 
-def property_to_plain_text(prop):
+def plain_text_from_title(prop):
+    title = prop.get("title", []) if prop else []
+    return "".join(item.get("plain_text", "") for item in title)
+
+
+def plain_text_from_rich_text(prop):
+    rich_text = prop.get("rich_text", []) if prop else []
+    return "".join(item.get("plain_text", "") for item in rich_text)
+
+
+def get_prop_plain_value(prop):
     if not prop:
-        return ""
+        return None
 
     prop_type = prop.get("type")
 
     if prop_type == "title":
-        return plain_text_from_text_array(prop.get("title", []))
+        return plain_text_from_title(prop)
 
     if prop_type == "rich_text":
-        return plain_text_from_text_array(prop.get("rich_text", []))
+        return plain_text_from_rich_text(prop)
+
+    if prop_type == "number":
+        return prop.get("number")
 
     if prop_type == "select":
         value = prop.get("select")
-        return value.get("name", "") if value else ""
+        return value.get("name") if value else None
+
+    if prop_type == "multi_select":
+        return [item.get("name") for item in prop.get("multi_select", [])]
 
     if prop_type == "status":
         value = prop.get("status")
-        return value.get("name", "") if value else ""
-
-    if prop_type == "multi_select":
-        return ", ".join(
-            item.get("name", "")
-            for item in prop.get("multi_select", [])
-            if item.get("name")
-        )
+        return value.get("name") if value else None
 
     if prop_type == "date":
         value = prop.get("date")
-        if not value:
-            return ""
-        start = value.get("start", "")
-        end = value.get("end", "")
-        return f"{start} ~ {end}" if end else start
-
-    if prop_type == "people":
-        names = []
-        for person in prop.get("people", []):
-            name = person.get("name")
-            if name:
-                names.append(name)
-        return ", ".join(names)
-
-    if prop_type == "number":
-        value = prop.get("number")
-        return "" if value is None else str(value)
+        return value.get("start") if value else None
 
     if prop_type == "checkbox":
-        return "true" if prop.get("checkbox") else "false"
+        return prop.get("checkbox")
 
     if prop_type == "url":
-        return prop.get("url") or ""
+        return prop.get("url")
 
     if prop_type == "email":
-        return prop.get("email") or ""
+        return prop.get("email")
 
     if prop_type == "phone_number":
-        return prop.get("phone_number") or ""
+        return prop.get("phone_number")
 
-    return ""
+    if prop_type == "people":
+        return [person.get("id") for person in prop.get("people", [])]
 
-
-def convert_property_value(source_prop, target_prop_schema):
-    if not source_prop or not target_prop_schema:
-        return None
-
-    source_type = source_prop.get("type")
-    target_type = target_prop_schema.get("type")
-
-    # 업데이트 불가 / 자동 계산 속성 제외
-    if target_type in [
-        "formula",
-        "rollup",
-        "created_time",
-        "created_by",
-        "last_edited_time",
-        "last_edited_by",
-        "unique_id",
-        "verification",
-        "relation",
-    ]:
-        return None
-
-    if target_type == "title":
-        if source_type == "title":
-            text = plain_text_from_text_array(source_prop.get("title", []))
-        elif source_type == "rich_text":
-            text = plain_text_from_text_array(source_prop.get("rich_text", []))
-        else:
-            text = property_to_plain_text(source_prop)
-
-        if not text:
-            text = "제목 없음"
-
-        return {
-            "title": make_text_array(text)
-        }
-
-    if target_type == "rich_text":
-        text = property_to_plain_text(source_prop)
-        return {
-            "rich_text": make_text_array(text)
-        }
-
-    if target_type == "number":
-        if source_type == "number":
-            return {
-                "number": source_prop.get("number")
-            }
-        return None
-
-    if target_type == "select":
-        name = None
-
-        if source_type == "select" and source_prop.get("select"):
-            name = source_prop["select"].get("name")
-        elif source_type == "status" and source_prop.get("status"):
-            name = source_prop["status"].get("name")
-        else:
-            text = property_to_plain_text(source_prop)
-            name = text if text else None
-
-        if not name:
-            return None
-
-        return {
-            "select": {
-                "name": name
-            }
-        }
-
-    if target_type == "status":
-        name = None
-
-        if source_type == "status" and source_prop.get("status"):
-            name = source_prop["status"].get("name")
-        elif source_type == "select" and source_prop.get("select"):
-            name = source_prop["select"].get("name")
-
-        if not name:
-            return None
-
-        return {
-            "status": {
-                "name": name
-            }
-        }
-
-    if target_type == "multi_select":
-        if source_type == "multi_select":
-            values = source_prop.get("multi_select", [])
-            return {
-                "multi_select": [
-                    {"name": item["name"]}
-                    for item in values
-                    if item.get("name")
-                ]
-            }
-
-        if source_type == "select" and source_prop.get("select"):
-            return {
-                "multi_select": [
-                    {"name": source_prop["select"]["name"]}
-                ]
-            }
-
-        return None
-
-    if target_type == "date":
-        if source_type == "date":
-            return {
-                "date": source_prop.get("date")
-            }
-        return None
-
-    if target_type == "people":
-        if source_type == "people":
-            return {
-                "people": [
-                    {"id": person["id"]}
-                    for person in source_prop.get("people", [])
-                    if person.get("id")
-                ]
-            }
-        return None
-
-    if target_type == "checkbox":
-        if source_type == "checkbox":
-            return {
-                "checkbox": bool(source_prop.get("checkbox"))
-            }
-        return None
-
-    if target_type == "url":
-        if source_type == "url":
-            return {
-                "url": source_prop.get("url")
-            }
-
-        text = property_to_plain_text(source_prop)
-        if text.startswith("http://") or text.startswith("https://"):
-            return {
-                "url": text
-            }
-
-        return None
-
-    if target_type == "email":
-        if source_type == "email":
-            return {
-                "email": source_prop.get("email")
-            }
-        return None
-
-    if target_type == "phone_number":
-        if source_type == "phone_number":
-            return {
-                "phone_number": source_prop.get("phone_number")
-            }
-        return None
-
-    if target_type == "files":
-        if source_type == "files":
-            return {
-                "files": source_prop.get("files", [])
-            }
-        return None
+    if prop_type == "files":
+        return [
+            file.get("name")
+            for file in prop.get("files", [])
+        ]
 
     return None
 
 
-def set_text_like_property(target_props, target_schema, prop_name, text):
-    if not prop_name:
-        return
+# =========================================================
+# 속성 변환 함수
+# =========================================================
 
-    prop_type = target_schema[prop_name].get("type")
+def convert_property_for_update(source_prop, target_prop_type):
+    """
+    원본 속성을 대상 DB 업데이트 가능한 형식으로 변환.
+    지원하지 않거나 타입이 맞지 않으면 None 반환.
+    """
 
-    if prop_type == "rich_text":
-        target_props[prop_name] = {
-            "rich_text": make_text_array(text)
+    if not source_prop:
+        return None
+
+    source_type = source_prop.get("type")
+
+    if source_type == "title" and target_prop_type == "title":
+        text = plain_text_from_title(source_prop)
+        return {
+            "title": [
+                {
+                    "text": {
+                        "content": text
+                    }
+                }
+            ]
         }
 
-    elif prop_type == "title":
-        target_props[prop_name] = {
-            "title": make_text_array(text)
+    if source_type == "rich_text" and target_prop_type == "rich_text":
+        text = plain_text_from_rich_text(source_prop)
+        return {
+            "rich_text": [
+                {
+                    "text": {
+                        "content": text
+                    }
+                }
+            ]
         }
 
-    elif prop_type == "select":
-        target_props[prop_name] = {
+    if source_type == "number" and target_prop_type == "number":
+        return {
+            "number": source_prop.get("number")
+        }
+
+    if source_type == "select" and target_prop_type == "select":
+        value = source_prop.get("select")
+        return {
             "select": {
-                "name": text
+                "name": value.get("name")
+            }
+        } if value else {"select": None}
+
+    if source_type == "multi_select" and target_prop_type == "multi_select":
+        values = source_prop.get("multi_select", [])
+        return {
+            "multi_select": [
+                {
+                    "name": item.get("name")
+                }
+                for item in values
+                if item.get("name")
+            ]
+        }
+
+    if source_type == "status" and target_prop_type == "status":
+        value = source_prop.get("status")
+        return {
+            "status": {
+                "name": value.get("name")
+            }
+        } if value else {"status": None}
+
+    if source_type == "date" and target_prop_type == "date":
+        return {
+            "date": source_prop.get("date")
+        }
+
+    if source_type == "checkbox" and target_prop_type == "checkbox":
+        return {
+            "checkbox": bool(source_prop.get("checkbox"))
+        }
+
+    if source_type == "url" and target_prop_type == "url":
+        return {
+            "url": source_prop.get("url")
+        }
+
+    if source_type == "email" and target_prop_type == "email":
+        return {
+            "email": source_prop.get("email")
+        }
+
+    if source_type == "phone_number" and target_prop_type == "phone_number":
+        return {
+            "phone_number": source_prop.get("phone_number")
+        }
+
+    if source_type == "people" and target_prop_type == "people":
+        return {
+            "people": [
+                {
+                    "id": person.get("id")
+                }
+                for person in source_prop.get("people", [])
+                if person.get("id")
+            ]
+        }
+
+    if source_type == "files" and target_prop_type == "files":
+        files = []
+
+        for file in source_prop.get("files", []):
+            file_type = file.get("type")
+            name = file.get("name")
+
+            if file_type == "external":
+                url = file.get("external", {}).get("url")
+                if url:
+                    files.append({
+                        "name": name,
+                        "external": {
+                            "url": url
+                        }
+                    })
+
+            # Notion 내부 파일은 API로 그대로 복사하기 어려워서 제외
+
+        return {
+            "files": files
+        }
+
+    return None
+
+
+def make_text_property(value, target_prop_type):
+    value = "" if value is None else str(value)
+
+    if target_prop_type == "rich_text":
+        return {
+            "rich_text": [
+                {
+                    "text": {
+                        "content": value
+                    }
+                }
+            ]
+        }
+
+    if target_prop_type == "title":
+        return {
+            "title": [
+                {
+                    "text": {
+                        "content": value
+                    }
+                }
+            ]
+        }
+
+    if target_prop_type == "url":
+        return {
+            "url": value
+        }
+
+    if target_prop_type == "select":
+        return {
+            "select": {
+                "name": value
             }
         }
 
-    elif prop_type == "url":
-        target_props[prop_name] = {
-            "url": text
-        }
+    return None
 
+
+# =========================================================
+# 통합 DB 속성 생성
+# =========================================================
 
 def build_integrated_properties(
     source_page,
     target_schema,
     source_db_id,
-    source_db_name
+    source_db_name,
 ):
     source_props = source_page.get("properties", {})
-    target_props = {}
+    source_page_id = source_page.get("id")
+    source_url = source_page.get("url")
 
-    source_page_id = source_page.get("id", "")
-    source_page_url = source_page.get("url", "")
+    desired_props = {}
 
-    # 1. 통합 DB 제목 컬럼 채우기
-    target_title_name = find_title_property_name(target_schema)
+    target_title_prop_name = get_title_property_name(target_schema)
+    source_title_prop_name = get_title_property_name(source_props)
 
-    if target_title_name:
-        source_title = get_page_title(source_page)
-        target_props[target_title_name] = {
-            "title": make_text_array(source_title)
+    # 1) 제목 속성 처리
+    if target_title_prop_name and source_title_prop_name:
+        source_title_prop = source_props.get(source_title_prop_name)
+        title_text = plain_text_from_title(source_title_prop) or "제목 없음"
+
+        desired_props[target_title_prop_name] = {
+            "title": [
+                {
+                    "text": {
+                        "content": title_text
+                    }
+                }
+            ]
         }
 
-    # 2. 같은 이름의 컬럼 자동 복사
-    for prop_name, target_prop_schema in target_schema.items():
+    # 2) 같은 이름 / 같은 타입 속성 복사
+    for prop_name, source_prop in source_props.items():
         if prop_name in EXCLUDED_PROPERTIES:
             continue
 
-        if target_title_name and prop_name == target_title_name:
+        if prop_name not in target_schema:
             continue
 
-        if prop_name not in source_props:
+        target_prop_type = target_schema[prop_name].get("type")
+
+        # 제목은 위에서 별도 처리
+        if target_prop_type == "title":
             continue
 
-        converted = convert_property_value(
-            source_props.get(prop_name),
-            target_prop_schema
-        )
+        # formula, rollup, created_time, last_edited_time 등은 쓰기 불가
+        if target_prop_type in {
+            "formula",
+            "rollup",
+            "created_time",
+            "created_by",
+            "last_edited_time",
+            "last_edited_by",
+            "unique_id",
+            "button",
+        }:
+            continue
+
+        converted = convert_property_for_update(source_prop, target_prop_type)
 
         if converted is not None:
-            target_props[prop_name] = converted
+            desired_props[prop_name] = converted
 
-    # 3. 원본 page ID 저장
-    source_page_id_prop = first_existing_property_name(
+    # 3) 원본 page ID 저장
+    source_page_id_prop_name = get_first_existing_prop_name(
         target_schema,
         SOURCE_PAGE_ID_PROP_CANDIDATES
     )
-    set_text_like_property(
-        target_props,
-        target_schema,
-        source_page_id_prop,
-        source_page_id
-    )
 
-    # 4. 원본 DB ID 저장
-    source_db_id_prop = first_existing_property_name(
+    if source_page_id_prop_name:
+        target_type = target_schema[source_page_id_prop_name].get("type")
+        prop = make_text_property(source_page_id, target_type)
+
+        if prop:
+            desired_props[source_page_id_prop_name] = prop
+
+    # 4) 원본 DB ID 저장
+    source_db_id_prop_name = get_first_existing_prop_name(
         target_schema,
         SOURCE_DB_ID_PROP_CANDIDATES
     )
-    set_text_like_property(
-        target_props,
-        target_schema,
-        source_db_id_prop,
-        source_db_id
-    )
 
-    # 5. 팀명 / 원본 DB명 저장
-    source_db_name_prop = first_existing_property_name(
-        target_schema,
-        SOURCE_DB_NAME_PROP_CANDIDATES
-    )
-    set_text_like_property(
-        target_props,
-        target_schema,
-        source_db_name_prop,
-        source_db_name
-    )
+    if source_db_id_prop_name:
+        target_type = target_schema[source_db_id_prop_name].get("type")
+        prop = make_text_property(source_db_id, target_type)
 
-    # 6. 원본 링크 저장
-    source_url_prop = first_existing_property_name(
+        if prop:
+            desired_props[source_db_id_prop_name] = prop
+
+    # 5) 원본 URL 저장
+    source_url_prop_name = get_first_existing_prop_name(
         target_schema,
         SOURCE_URL_PROP_CANDIDATES
     )
 
-    if source_url_prop and source_page_url:
-        prop_type = target_schema[source_url_prop].get("type")
+    if source_url_prop_name:
+        target_type = target_schema[source_url_prop_name].get("type")
+        prop = make_text_property(source_url, target_type)
 
-        if prop_type == "url":
-            target_props[source_url_prop] = {
-                "url": source_page_url
+        if prop:
+            desired_props[source_url_prop_name] = prop
+
+    # 6) 원본 DB명 / 팀명 저장
+    source_db_name_prop_name = get_first_existing_prop_name(
+        target_schema,
+        SOURCE_DB_NAME_PROP_CANDIDATES
+    )
+
+    if source_db_name_prop_name:
+        target_type = target_schema[source_db_name_prop_name].get("type")
+        prop = make_text_property(source_db_name, target_type)
+
+        if prop:
+            desired_props[source_db_name_prop_name] = prop
+
+    # 7) 원본 페이지의 최종 편집 일시를 통합 DB의 Date 속성에 저장
+    last_edited_time_prop_name = get_first_existing_prop_name(
+        target_schema,
+        LAST_EDITED_TIME_PROP_CANDIDATES
+    )
+
+    if last_edited_time_prop_name:
+        target_type = target_schema[last_edited_time_prop_name].get("type")
+
+        if target_type == "date":
+            desired_props[last_edited_time_prop_name] = {
+                "date": {
+                    "start": source_page.get("last_edited_time")
+                }
             }
 
-        elif prop_type == "rich_text":
-            target_props[source_url_prop] = {
-                "rich_text": make_text_array(source_page_url)
-            }
-
-    return target_props
+    return desired_props
 
 
 # =========================================================
-# 변경 여부 비교
+# 통합 DB 기존 페이지 매핑
 # =========================================================
 
-def desired_text_value(desired, key):
-    return plain_text_from_text_array(desired.get(key, []))
+def get_existing_target_pages(target_schema):
+    pages = query_all_pages(TARGET_DB_ID)
+    existing = {}
+
+    source_page_id_prop_name = get_first_existing_prop_name(
+        target_schema,
+        SOURCE_PAGE_ID_PROP_CANDIDATES
+    )
+
+    if not source_page_id_prop_name:
+        raise ValueError(
+            "통합 DB에 원본 페이지 ID 속성이 없습니다. "
+            "예: '원본 페이지 ID' 속성을 만들어야 중복 생성 없이 업데이트가 가능합니다."
+        )
+
+    for page in pages:
+        props = page.get("properties", {})
+        source_page_id = get_prop_plain_value(props.get(source_page_id_prop_name))
+
+        if source_page_id:
+            existing[source_page_id] = {
+                "page_id": page.get("id"),
+                "properties": props,
+            }
+
+    return existing
 
 
-def actual_text_value(actual, key):
-    return plain_text_from_text_array(actual.get(key, []))
+# =========================================================
+# 속성 비교
+# =========================================================
 
-
-def normalize_actual_property(actual_prop, prop_type):
-    if not actual_prop:
+def normalize_desired_property(prop):
+    if not prop:
         return None
 
-    if prop_type == "title":
-        return actual_text_value(actual_prop, "title")
-
-    if prop_type == "rich_text":
-        return actual_text_value(actual_prop, "rich_text")
-
-    if prop_type == "number":
-        return actual_prop.get("number")
-
-    if prop_type == "select":
-        value = actual_prop.get("select")
-        return value.get("name") if value else None
-
-    if prop_type == "status":
-        value = actual_prop.get("status")
-        return value.get("name") if value else None
-
-    if prop_type == "multi_select":
-        return sorted(
-            item.get("name")
-            for item in actual_prop.get("multi_select", [])
-            if item.get("name")
+    if "title" in prop:
+        return "".join(
+            item.get("text", {}).get("content", "")
+            for item in prop.get("title", [])
         )
 
-    if prop_type == "date":
-        return actual_prop.get("date")
-
-    if prop_type == "people":
-        return sorted(
-            person.get("id")
-            for person in actual_prop.get("people", [])
-            if person.get("id")
+    if "rich_text" in prop:
+        return "".join(
+            item.get("text", {}).get("content", "")
+            for item in prop.get("rich_text", [])
         )
 
-    if prop_type == "checkbox":
-        return bool(actual_prop.get("checkbox"))
+    if "number" in prop:
+        return prop.get("number")
 
-    if prop_type == "url":
-        return actual_prop.get("url")
-
-    if prop_type == "email":
-        return actual_prop.get("email")
-
-    if prop_type == "phone_number":
-        return actual_prop.get("phone_number")
-
-    if prop_type == "files":
-        files = actual_prop.get("files", [])
-        return [
-            {
-                "name": item.get("name"),
-                "type": item.get("type"),
-                "external": item.get("external", {}).get("url") if item.get("type") == "external" else None,
-            }
-            for item in files
-        ]
-
-    return None
-
-
-def normalize_desired_property(desired_prop, prop_type):
-    if not desired_prop:
-        return None
-
-    if prop_type == "title":
-        return desired_text_value(desired_prop, "title")
-
-    if prop_type == "rich_text":
-        return desired_text_value(desired_prop, "rich_text")
-
-    if prop_type == "number":
-        return desired_prop.get("number")
-
-    if prop_type == "select":
-        value = desired_prop.get("select")
+    if "select" in prop:
+        value = prop.get("select")
         return value.get("name") if value else None
 
-    if prop_type == "status":
-        value = desired_prop.get("status")
+    if "multi_select" in prop:
+        return [item.get("name") for item in prop.get("multi_select", [])]
+
+    if "status" in prop:
+        value = prop.get("status")
         return value.get("name") if value else None
 
-    if prop_type == "multi_select":
-        return sorted(
-            item.get("name")
-            for item in desired_prop.get("multi_select", [])
-            if item.get("name")
-        )
+    if "date" in prop:
+        value = prop.get("date")
+        return value.get("start") if value else None
 
-    if prop_type == "date":
-        return desired_prop.get("date")
+    if "checkbox" in prop:
+        return prop.get("checkbox")
 
-    if prop_type == "people":
-        return sorted(
-            person.get("id")
-            for person in desired_prop.get("people", [])
-            if person.get("id")
-        )
+    if "url" in prop:
+        return prop.get("url")
 
-    if prop_type == "checkbox":
-        return bool(desired_prop.get("checkbox"))
+    if "email" in prop:
+        return prop.get("email")
 
-    if prop_type == "url":
-        return desired_prop.get("url")
+    if "phone_number" in prop:
+        return prop.get("phone_number")
 
-    if prop_type == "email":
-        return desired_prop.get("email")
+    if "people" in prop:
+        return [person.get("id") for person in prop.get("people", [])]
 
-    if prop_type == "phone_number":
-        return desired_prop.get("phone_number")
+    if "files" in prop:
+        return [file.get("name") for file in prop.get("files", [])]
 
-    if prop_type == "files":
-        files = desired_prop.get("files", [])
-        return [
-            {
-                "name": item.get("name"),
-                "type": item.get("type"),
-                "external": item.get("external", {}).get("url") if item.get("type") == "external" else None,
-            }
-            for item in files
-        ]
-
-    return None
+    return prop
 
 
-def properties_changed(existing_page, desired_props, target_schema):
-    """
-    기존 통합 페이지와 새로 만들 속성을 비교.
-    변경된 속성이 하나라도 있으면 True.
-    """
+def properties_changed(existing_page, desired_props):
     existing_props = existing_page.get("properties", {})
 
     for prop_name, desired_prop in desired_props.items():
-        if prop_name not in target_schema:
-            continue
+        existing_prop = existing_props.get(prop_name)
 
-        prop_type = target_schema[prop_name].get("type")
+        existing_value = get_prop_plain_value(existing_prop)
+        desired_value = normalize_desired_property(desired_prop)
 
-        actual_prop = existing_props.get(prop_name)
-
-        actual_value = normalize_actual_property(actual_prop, prop_type)
-        desired_value = normalize_desired_property(desired_prop, prop_type)
-
-        if actual_value != desired_value:
+        if existing_value != desired_value:
             return True
 
     return False
 
 
 # =========================================================
-# 통합 DB 기존 데이터 조회
-# =========================================================
-
-def get_existing_target_pages(target_schema):
-    source_page_id_prop = first_existing_property_name(
-        target_schema,
-        SOURCE_PAGE_ID_PROP_CANDIDATES
-    )
-
-    if not source_page_id_prop:
-        raise RuntimeError(
-            "통합 DB에 '원본 page ID' Rich text 컬럼이 없습니다. "
-            "중복 방지를 위해 반드시 생성해야 합니다."
-        )
-
-    existing = {}
-    start_cursor = None
-
-    while True:
-        kwargs = {
-            "data_source_id": TARGET_DB_ID,
-            "page_size": 100,
-        }
-
-        if start_cursor:
-            kwargs["start_cursor"] = start_cursor
-
-        result = notion_call(notion.data_sources.query, **kwargs)
-
-        for page in result.get("results", []):
-            props = page.get("properties", {})
-            prop = props.get(source_page_id_prop)
-
-            source_page_id = get_rich_text_value(prop)
-
-            if source_page_id:
-                existing[source_page_id] = {
-                    "page_id": page["id"],
-                    "properties": props,
-                }
-
-        if not result.get("has_more"):
-            break
-
-        start_cursor = result.get("next_cursor")
-
-    return existing
-
-
-# =========================================================
-# 통합 DB 생성 / 수정
+# 페이지 생성 / 수정
 # =========================================================
 
 def create_target_page(properties):
-    return notion_call(
-        notion.pages.create,
+    sleep_api()
+    return notion.pages.create(
         parent={
-            "type": "data_source_id",
-            "data_source_id": TARGET_DB_ID,
+            "database_id": TARGET_DB_ID
         },
-        properties=properties
+        properties=properties,
     )
 
 
 def update_target_page(page_id, properties):
-    return notion_call(
-        notion.pages.update,
+    sleep_api()
+    return notion.pages.update(
         page_id=page_id,
-        properties=properties
+        properties=properties,
     )
 
 
 # =========================================================
-# 결과표 출력
+# 결과 DB 저장
 # =========================================================
 
-def print_result_table(rows):
-    print("======================================================")
-    print("NO |  개수 |  추가 |  수정 | 건너뜀 |  삭제 |   팀명")
-    print("------------------------------------------------------")
+def build_result_properties(row):
+    return {
+        "날짜": {
+            "date": {
+                "start": today_kst_date()
+            }
+        },
+        "팀명": {
+            "title": [
+                {
+                    "text": {
+                        "content": str(row.get("team_name") or "")
+                    }
+                }
+            ]
+        },
+        "프로젝트 수": {
+            "number": safe_int(row.get("count"))
+        },
+        "추가": {
+            "number": safe_int(row.get("added"))
+        },
+        "수정": {
+            "number": safe_int(row.get("updated"))
+        },
+        "건너뜀": {
+            "number": safe_int(row.get("skipped"))
+        },
+        "삭제": {
+            "number": safe_int(row.get("deleted"))
+        },
+        "최종 편집 일시": {
+            "date": {
+                "start": now_kst_iso()
+            }
+        },
+    }
 
-    total_count = 0
-    total_added = 0
-    total_updated = 0
-    total_skipped = 0
-    total_deleted = 0
 
-    for idx, row in enumerate(rows, start=1):
-        count = row.get("count", 0)
-        added = row.get("added", 0)
-        updated = row.get("updated", 0)
-        skipped = row.get("skipped", 0)
-        deleted = row.get("deleted", 0)
-        team = row.get("team", "")
+def create_result_page(row):
+    sleep_api()
+    return notion.pages.create(
+        parent={
+            "database_id": RESULT_DB_ID
+        },
+        properties=build_result_properties(row),
+    )
 
-        total_count += count
-        total_added += added
-        total_updated += updated
-        total_skipped += skipped
-        total_deleted += deleted
 
+def save_result_rows_to_notion(result_rows):
+    for row in result_rows:
+        try:
+            create_result_page(row)
+        except Exception as e:
+            print(f"[WARN] 결과 DB 저장 실패: {row.get('team_name')} / {e}")
+            continue
+
+
+# =========================================================
+# 결과 출력
+# =========================================================
+
+def print_result_table(result_rows):
+    print("")
+    print("======================================")
+    print("프로젝트 통합 결과")
+    print("======================================")
+    print("팀명 | 프로젝트 수 | 추가 | 수정 | 건너뜀 | 삭제")
+    print("--------------------------------------")
+
+    for row in result_rows:
         print(
-            f"{idx:02d} | "
-            f"{count:04d} | "
-            f"{added:03d} | "
-            f"{updated:03d} | "
-            f"{skipped:03d} | "
-            f"{deleted:03d} |   "
-            f"{team}"
+            f"{row.get('team_name', '')} | "
+            f"{row.get('count', 0)} | "
+            f"{row.get('added', 0)} | "
+            f"{row.get('updated', 0)} | "
+            f"{row.get('skipped', 0)} | "
+            f"{row.get('deleted', 0)}"
         )
 
-    print("------------------------------------------------------")
-    print(
-        f"계 | "
-        f"{total_count:04d} | "
-        f"{total_added:03d} | "
-        f"{total_updated:03d} | "
-        f"{total_skipped:03d} | "
-        f"{total_deleted:03d} |"
-    )
-    print("======================================================")
+    print("======================================")
+    print("")
 
 
 # =========================================================
-# 메인 실행
+# 메인
 # =========================================================
 
 def main():
-    target_schema = get_data_source_schema(TARGET_DB_ID)
+    print("======================================")
+    print("Notion 프로젝트 통합 시작")
+    print("======================================")
+
+    print("[INFO] 통합 DB schema 조회")
+    target_schema = retrieve_database_schema(TARGET_DB_ID)
+
+    print("[INFO] 통합 DB 기존 페이지 조회")
     existing_target_pages = get_existing_target_pages(target_schema)
+    print(f"[INFO] 기존 통합 페이지 수: {len(existing_target_pages)}")
 
     result_rows = []
 
-    for source in SOURCE_DBS:
-        source_db_id = source.get("id", "").strip()
-        team_name = source.get("team", "").strip()
-
-        if not source_db_id:
-            continue
+    for source_db in SOURCE_DBS:
+        source_db_id = source_db["id"]
+        team_name = source_db["team"]
 
         row = {
-            "team": team_name,
+            "team_name": team_name,
+            "source_db_id": source_db_id,
             "count": 0,
             "added": 0,
             "updated": 0,
@@ -943,11 +847,20 @@ def main():
             "deleted": 0,
         }
 
+        print("--------------------------------------")
+        print(f"[INFO] 원본 DB: {team_name}")
+        print(f"[INFO] 원본 DB ID: {source_db_id}")
+
         try:
-            source_pages = get_all_pages(source_db_id)
+            source_pages = query_all_pages(source_db_id)
 
         except APIResponseError as e:
             if is_object_not_found_error(e):
+                print(
+                    f"[WARN] 접근 불가 또는 공유 안 됨: {team_name} / "
+                    f"{source_db_id}"
+                )
+
                 # 삭제되었거나 공유 안 된 DB는 0건으로 표시하고 다음 DB로 넘어감
                 result_rows.append(row)
                 continue
@@ -955,6 +868,8 @@ def main():
             raise
 
         row["count"] = len(source_pages)
+
+        print(f"[INFO] 원본 페이지 수: {row['count']}")
 
         for source_page in source_pages:
             source_page_id = source_page.get("id")
@@ -981,14 +896,12 @@ def main():
                     if properties_changed(
                         existing_page=existing,
                         desired_props=desired_props,
-                        target_schema=target_schema
                     ):
                         update_target_page(
                             page_id=existing["page_id"],
-                            properties=desired_props
+                            properties=desired_props,
                         )
 
-                        # 업데이트 후 메모리상 기존 값도 갱신
                         existing_target_pages[source_page_id]["properties"].update(
                             desired_props
                         )
@@ -1008,13 +921,22 @@ def main():
 
                     row["added"] += 1
 
-            except Exception:
+            except Exception as e:
+                print(f"[WARN] 페이지 처리 실패: {team_name} / {source_page_id} / {e}")
                 row["skipped"] += 1
                 continue
 
         result_rows.append(row)
 
     print_result_table(result_rows)
+
+    print("[INFO] 실행 결과 Notion DB 저장 시작")
+    save_result_rows_to_notion(result_rows)
+    print("[INFO] 실행 결과 Notion DB 저장 완료")
+
+    print("======================================")
+    print("Notion 프로젝트 통합 완료")
+    print("======================================")
 
 
 if __name__ == "__main__":
