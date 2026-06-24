@@ -22,10 +22,10 @@ logging.getLogger("notion_client").setLevel(logging.ERROR)
 TOKEN = os.environ["NOTION_TOKEN"]
 
 # 통합 프로젝트 DB / Data Source ID
-TARGET_DB_ID = "395cbb1d-cbaa-829c-a5a4-878f6a7b9b7d"
+TARGET_DB_ID = "373cbb1dcbaa8024b81ace263b9e40b7"
 
 # 실행 결과 저장 DB
-RESULT_DB_ID = "389cbb1d-cbaa-801b-9855-000b71234b6f"
+RESULT_DB_ID = "389cbb1dcbaa80c4b386ef38a24114a8"
 
 # 테스트할 때만 숫자 입력. 전체 실행은 None.
 TEST_LIMIT_PER_DB = None
