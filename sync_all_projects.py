@@ -733,7 +733,7 @@ def properties_changed(existing_page, desired_props):
 
 
 # =========================================================
-# 페이지 생성 / 수정 / 삭제
+# 페이지 생성 / 수정 / 휴지통 처리
 # =========================================================
 
 def create_page_in_data_source(data_source_id, properties):
@@ -746,13 +746,21 @@ def create_page_in_data_source(data_source_id, properties):
             },
             properties=properties,
         )
-    except Exception:
-        return notion.pages.create(
-            parent={
-                "database_id": data_source_id
-            },
-            properties=properties,
-        )
+
+    except Exception as e1:
+        print(f"[WARN] data_source_id 방식 생성 실패: {e1}")
+
+        try:
+            return notion.pages.create(
+                parent={
+                    "database_id": data_source_id
+                },
+                properties=properties,
+            )
+
+        except Exception as e2:
+            print(f"[ERROR] database_id 방식 생성도 실패: {e2}")
+            raise
 
 
 def create_target_page(properties):
@@ -779,36 +787,8 @@ def archive_page(page_id):
 
 
 # =========================================================
-# 결과 DB 초기화 후 저장
+# 결과 DB 저장
 # =========================================================
-
-def clear_result_data_source():
-    """
-    결과 DB에 기존 생성되어 있던 페이지를 전부 휴지통 처리.
-    Notion API는 완전 삭제가 아니라 archived=True 방식으로 처리함.
-    """
-
-    print("[INFO] 결과 DB 기존 페이지 삭제 시작")
-
-    pages = query_all_pages(RESULT_DATA_SOURCE_ID)
-
-    deleted_count = 0
-
-    for page in pages:
-        page_id = page.get("id")
-
-        if not page_id:
-            continue
-
-        try:
-            archive_page(page_id)
-            deleted_count += 1
-        except Exception as e:
-            print(f"[WARN] 결과 DB 기존 페이지 삭제 실패: {page_id} / {e}")
-            continue
-
-    print(f"[INFO] 결과 DB 기존 페이지 삭제 완료: {deleted_count}건")
-
 
 def build_result_properties(row):
     props = {
@@ -867,26 +847,69 @@ def create_result_page(row):
 
 def save_result_rows_to_notion(result_rows):
     """
-    결과 DB를 먼저 비우고, 이번 실행 결과만 새로 생성.
+    안전 방식:
+    1) 기존 결과 페이지 조회
+    2) 새 결과 페이지를 먼저 전부 생성
+    3) 새 페이지 생성이 모두 성공하면 기존 결과 페이지를 휴지통 처리
     """
 
-    clear_result_data_source()
+    print("[INFO] 결과 DB 기존 페이지 조회")
+    old_pages = query_all_pages(RESULT_DATA_SOURCE_ID)
+    print(f"[INFO] 결과 DB 기존 페이지 수: {len(old_pages)}")
 
     print("[INFO] 결과 DB 신규 페이지 생성 시작")
 
-    created_count = 0
+    new_page_ids = []
 
     for index, row in enumerate(result_rows, start=1):
         row["no"] = index
 
         try:
-            create_result_page(row)
-            created_count += 1
+            created = create_result_page(row)
+            new_page_id = created.get("id")
+
+            if not new_page_id:
+                raise RuntimeError("생성된 결과 페이지 ID를 확인할 수 없습니다.")
+
+            new_page_ids.append(new_page_id)
+
+            print(
+                f"[INFO] 결과 DB 생성 성공: "
+                f"{index} / {row.get('team_name')} / {new_page_id}"
+            )
+
         except Exception as e:
-            print(f"[WARN] 결과 DB 저장 실패: {row.get('team_name')} / {e}")
+            print(
+                f"[ERROR] 결과 DB 저장 실패: "
+                f"{index} / {row.get('team_name')} / {e}"
+            )
+            print("[ERROR] 새 결과 생성 실패로 기존 결과 DB는 삭제하지 않습니다.")
+            raise
+
+    print(f"[INFO] 결과 DB 신규 페이지 생성 완료: {len(new_page_ids)}건")
+
+    print("[INFO] 결과 DB 기존 페이지 삭제 시작")
+
+    deleted_count = 0
+
+    for page in old_pages:
+        page_id = page.get("id")
+
+        if not page_id:
             continue
 
-    print(f"[INFO] 결과 DB 신규 페이지 생성 완료: {created_count}건")
+        if page_id in new_page_ids:
+            continue
+
+        try:
+            archive_page(page_id)
+            deleted_count += 1
+
+        except Exception as e:
+            print(f"[WARN] 결과 DB 기존 페이지 삭제 실패: {page_id} / {e}")
+            continue
+
+    print(f"[INFO] 결과 DB 기존 페이지 삭제 완료: {deleted_count}건")
 
 
 # =========================================================
