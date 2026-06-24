@@ -818,7 +818,7 @@ def build_result_properties(row):
         "수정": {
             "number": safe_int(row.get("updated"))
         },
-        "건너뜀": {
+        "미반영": {
             "number": safe_int(row.get("skipped"))
         },
         "삭제": {
@@ -921,7 +921,7 @@ def print_result_table(result_rows):
     print("======================================")
     print("프로젝트 통합 결과")
     print("======================================")
-    print("No | 팀명 | 프로젝트 수 | 추가 | 수정 | 건너뜀 | 삭제 | 최신 편집 일시")
+    print("No | 팀명 | 프로젝트 수 | 추가 | 수정 | 미반영 | 삭제 | 최신 편집 일시")
     print("--------------------------------------")
 
     for index, row in enumerate(result_rows, start=1):
