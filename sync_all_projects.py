@@ -11,7 +11,7 @@ from notion_client.errors import APIResponseError
 # =========================================================
 # 로그 설정
 # =========================================================
-# Notion SDK의 WARNING 로그가 결과물에 섞이지 않도록 숨김
+
 logging.getLogger("notion_client").setLevel(logging.ERROR)
 
 
@@ -21,11 +21,11 @@ logging.getLogger("notion_client").setLevel(logging.ERROR)
 
 TOKEN = os.environ["NOTION_TOKEN"]
 
-# 통합 프로젝트 DB / Data Source ID
-TARGET_DB_ID = "373cbb1dcbaa8024b81ace263b9e40b7"
+# 통합 프로젝트 Data Source ID
+TARGET_DATA_SOURCE_ID = "395cbb1d-cbaa-829c-a5a4-878f6a7b9b7d"
 
-# 실행 결과 저장 DB
-RESULT_DB_ID = "389cbb1dcbaa80c4b386ef38a24114a8"
+# 실행 결과 저장 Data Source ID
+RESULT_DATA_SOURCE_ID = "389cbb1d-cbaa-801b-9855-000b71234b6f"
 
 # 테스트할 때만 숫자 입력. 전체 실행은 None.
 TEST_LIMIT_PER_DB = None
@@ -35,7 +35,13 @@ API_SLEEP_SEC = 0.05
 
 KST = ZoneInfo("Asia/Seoul")
 
-# 더 이상 취합하지 않을 속성
+notion = Client(auth=TOKEN)
+
+
+# =========================================================
+# 제외 / 후보 속성
+# =========================================================
+
 EXCLUDED_PROPERTIES = {
     "중요도",
     "Priority",
@@ -88,6 +94,10 @@ LAST_EDITED_TIME_PROP_CANDIDATES = [
 ]
 
 
+# =========================================================
+# 원본 Data Source 목록
+# =========================================================
+
 SOURCE_DBS = [
     {"id": "366cbb1d-cbaa-8035-925a-000b1ddd6708", "team": "평택생산팀"},
     {"id": "366cbb1d-cbaa-8044-9bef-000bc920e796", "team": "재경/내부통제(ES)팀"},
@@ -108,16 +118,14 @@ SOURCE_DBS = [
     {"id": "366cbb1d-cbaa-8079-ab31-000beb064b25", "team": "소재생기팀"},
     {"id": "366cbb1d-cbaa-8014-90ef-000b873a85d3", "team": "전장품질혁신팀"},
     {"id": "366cbb1d-cbaa-80a7-9c9e-000b9208d459", "team": "전장부품생산팀"},
-    {"id": "366cbb1d-cbaa-8024-96a5-000bfde68d97", "team": "품질관리팀"},
     {"id": "366cbb1d-cbaa-8084-a4dc-000b002642cb", "team": "연구기획팀"},
-    {"id": "366cbb1d-cbaa-805f-9e9d-000b02ebc30a", "team": "품질혁신 2팀"},
     {"id": "366cbb1d-cbaa-806c-8e59-000b5c4b3699", "team": "전장영업관리팀"},
     {"id": "366cbb1d-cbaa-80cb-a8b5-000b1f9f82eb", "team": "D LAB팀"},
     {"id": "366cbb1d-cbaa-8092-9351-000b08ccbc33", "team": "선행개발팀"},
     {"id": "366cbb1d-cbaa-80d9-b7c6-000b83aa65d6", "team": "구매팀"},
     {"id": "366cbb1d-cbaa-8040-883c-000b00aec6a3", "team": "시스템개발팀"},
     {"id": "366cbb1d-cbaa-80c2-84fd-000b9fbdef8a", "team": "기구부품생산팀"},
-    {"id": "366cbb1d-cbaa-80c4-bcc1-000b0b470912", "team": "품질혁신 1팀"},
+    {"id": "366cbb1d-cbaa-80c4-bcc1-000b0b470912", "team": "품질혁신실"},
     {"id": "366cbb1d-cbaa-8080-a05c-000bfa1e8569", "team": "가공생기팀"},
     {"id": "366cbb1d-cbaa-808a-b8cc-000b2d46237b", "team": "R&D팀"},
     {"id": "366cbb1d-cbaa-8010-8350-000b11a95273", "team": "서산가공생산팀"},
@@ -129,8 +137,6 @@ SOURCE_DBS = [
     {"id": "366cbb1d-cbaa-807a-893c-000b351ef000", "team": "경영정보팀"},
     {"id": "359cbb1d-cbaa-82b2-b19a-07938394404e", "team": "선행기술팀"},
 ]
-
-notion = Client(auth=TOKEN)
 
 
 # =========================================================
@@ -147,10 +153,6 @@ def now_kst():
 
 def today_kst_date():
     return now_kst().date().isoformat()
-
-
-def now_kst_iso():
-    return now_kst().isoformat()
 
 
 def safe_int(value):
@@ -182,22 +184,28 @@ def get_title_property_name(schema):
 
 
 # =========================================================
-# Notion 조회 함수
+# Data Source 조회 함수
 # =========================================================
 
-def retrieve_database_schema(database_id):
+def retrieve_data_source_schema(data_source_id):
     sleep_api()
-    db = notion.databases.retrieve(database_id=database_id)
+
+    if hasattr(notion, "data_sources"):
+        ds = notion.data_sources.retrieve(data_source_id=data_source_id)
+        return ds.get("properties", {})
+
+    # 구버전 SDK 대비 예비 처리
+    db = notion.databases.retrieve(database_id=data_source_id)
     return db.get("properties", {})
 
 
-def query_all_pages(database_id):
+def query_all_pages(data_source_id):
     results = []
     start_cursor = None
 
     while True:
         payload = {
-            "database_id": database_id,
+            "data_source_id": data_source_id,
             "page_size": 100,
         }
 
@@ -205,7 +213,20 @@ def query_all_pages(database_id):
             payload["start_cursor"] = start_cursor
 
         sleep_api()
-        response = notion.databases.query(**payload)
+
+        if hasattr(notion, "data_sources"):
+            response = notion.data_sources.query(**payload)
+        else:
+            # 구버전 SDK 대비 예비 처리
+            legacy_payload = {
+                "database_id": data_source_id,
+                "page_size": 100,
+            }
+
+            if start_cursor:
+                legacy_payload["start_cursor"] = start_cursor
+
+            response = notion.databases.query(**legacy_payload)
 
         results.extend(response.get("results", []))
 
@@ -280,10 +301,7 @@ def get_prop_plain_value(prop):
         return [person.get("id") for person in prop.get("people", [])]
 
     if prop_type == "files":
-        return [
-            file.get("name")
-            for file in prop.get("files", [])
-        ]
+        return [file.get("name") for file in prop.get("files", [])]
 
     return None
 
@@ -293,11 +311,6 @@ def get_prop_plain_value(prop):
 # =========================================================
 
 def convert_property_for_update(source_prop, target_prop_type):
-    """
-    원본 속성을 대상 DB 업데이트 가능한 형식으로 변환.
-    지원하지 않거나 타입이 맞지 않으면 None 반환.
-    """
-
     if not source_prop:
         return None
 
@@ -334,31 +347,34 @@ def convert_property_for_update(source_prop, target_prop_type):
 
     if source_type == "select" and target_prop_type == "select":
         value = source_prop.get("select")
-        return {
-            "select": {
-                "name": value.get("name")
+        if value:
+            return {
+                "select": {
+                    "name": value.get("name")
+                }
             }
-        } if value else {"select": None}
+        return {"select": None}
 
     if source_type == "multi_select" and target_prop_type == "multi_select":
-        values = source_prop.get("multi_select", [])
         return {
             "multi_select": [
                 {
                     "name": item.get("name")
                 }
-                for item in values
+                for item in source_prop.get("multi_select", [])
                 if item.get("name")
             ]
         }
 
     if source_type == "status" and target_prop_type == "status":
         value = source_prop.get("status")
-        return {
-            "status": {
-                "name": value.get("name")
+        if value:
+            return {
+                "status": {
+                    "name": value.get("name")
+                }
             }
-        } if value else {"status": None}
+        return {"status": None}
 
     if source_type == "date" and target_prop_type == "date":
         return {
@@ -412,8 +428,6 @@ def convert_property_for_update(source_prop, target_prop_type):
                             "url": url
                         }
                     })
-
-            # Notion 내부 파일은 API로 그대로 복사하기 어려워서 제외
 
         return {
             "files": files
@@ -469,19 +483,20 @@ def make_text_property(value, target_prop_type):
 def build_integrated_properties(
     source_page,
     target_schema,
-    source_db_id,
-    source_db_name,
+    source_data_source_id,
+    source_data_source_name,
 ):
     source_props = source_page.get("properties", {})
     source_page_id = source_page.get("id")
     source_url = source_page.get("url")
+    source_last_edited_time = source_page.get("last_edited_time")
 
     desired_props = {}
 
     target_title_prop_name = get_title_property_name(target_schema)
     source_title_prop_name = get_title_property_name(source_props)
 
-    # 1) 제목 속성 처리
+    # 1) 제목 속성
     if target_title_prop_name and source_title_prop_name:
         source_title_prop = source_props.get(source_title_prop_name)
         title_text = plain_text_from_title(source_title_prop) or "제목 없음"
@@ -506,11 +521,9 @@ def build_integrated_properties(
 
         target_prop_type = target_schema[prop_name].get("type")
 
-        # 제목은 위에서 별도 처리
         if target_prop_type == "title":
             continue
 
-        # formula, rollup, created_time, last_edited_time 등은 쓰기 불가
         if target_prop_type in {
             "formula",
             "rollup",
@@ -528,7 +541,7 @@ def build_integrated_properties(
         if converted is not None:
             desired_props[prop_name] = converted
 
-    # 3) 원본 page ID 저장
+    # 3) 원본 page ID
     source_page_id_prop_name = get_first_existing_prop_name(
         target_schema,
         SOURCE_PAGE_ID_PROP_CANDIDATES
@@ -541,7 +554,7 @@ def build_integrated_properties(
         if prop:
             desired_props[source_page_id_prop_name] = prop
 
-    # 4) 원본 DB ID 저장
+    # 4) 원본 Data Source ID
     source_db_id_prop_name = get_first_existing_prop_name(
         target_schema,
         SOURCE_DB_ID_PROP_CANDIDATES
@@ -549,12 +562,12 @@ def build_integrated_properties(
 
     if source_db_id_prop_name:
         target_type = target_schema[source_db_id_prop_name].get("type")
-        prop = make_text_property(source_db_id, target_type)
+        prop = make_text_property(source_data_source_id, target_type)
 
         if prop:
             desired_props[source_db_id_prop_name] = prop
 
-    # 5) 원본 URL 저장
+    # 5) 원본 URL
     source_url_prop_name = get_first_existing_prop_name(
         target_schema,
         SOURCE_URL_PROP_CANDIDATES
@@ -567,7 +580,7 @@ def build_integrated_properties(
         if prop:
             desired_props[source_url_prop_name] = prop
 
-    # 6) 원본 DB명 / 팀명 저장
+    # 6) 팀명 / 원본 DB명
     source_db_name_prop_name = get_first_existing_prop_name(
         target_schema,
         SOURCE_DB_NAME_PROP_CANDIDATES
@@ -575,12 +588,12 @@ def build_integrated_properties(
 
     if source_db_name_prop_name:
         target_type = target_schema[source_db_name_prop_name].get("type")
-        prop = make_text_property(source_db_name, target_type)
+        prop = make_text_property(source_data_source_name, target_type)
 
         if prop:
             desired_props[source_db_name_prop_name] = prop
 
-    # 7) 원본 페이지의 최종 편집 일시를 통합 DB의 Date 속성에 저장
+    # 7) 원본 페이지의 최종 편집 일시를 내가 만든 Date 속성에 저장
     last_edited_time_prop_name = get_first_existing_prop_name(
         target_schema,
         LAST_EDITED_TIME_PROP_CANDIDATES
@@ -589,10 +602,10 @@ def build_integrated_properties(
     if last_edited_time_prop_name:
         target_type = target_schema[last_edited_time_prop_name].get("type")
 
-        if target_type == "date":
+        if target_type == "date" and source_last_edited_time:
             desired_props[last_edited_time_prop_name] = {
                 "date": {
-                    "start": source_page.get("last_edited_time")
+                    "start": source_last_edited_time
                 }
             }
 
@@ -604,7 +617,7 @@ def build_integrated_properties(
 # =========================================================
 
 def get_existing_target_pages(target_schema):
-    pages = query_all_pages(TARGET_DB_ID)
+    pages = query_all_pages(TARGET_DATA_SOURCE_ID)
     existing = {}
 
     source_page_id_prop_name = get_first_existing_prop_name(
@@ -709,13 +722,30 @@ def properties_changed(existing_page, desired_props):
 # 페이지 생성 / 수정
 # =========================================================
 
-def create_target_page(properties):
+def create_page_in_data_source(data_source_id, properties):
     sleep_api()
-    return notion.pages.create(
-        parent={
-            "database_id": TARGET_DB_ID
-        },
-        properties=properties,
+
+    try:
+        return notion.pages.create(
+            parent={
+                "data_source_id": data_source_id
+            },
+            properties=properties,
+        )
+    except Exception:
+        # 일부 SDK / 워크스페이스에서는 database_id parent가 아직 동작할 수 있음
+        return notion.pages.create(
+            parent={
+                "database_id": data_source_id
+            },
+            properties=properties,
+        )
+
+
+def create_target_page(properties):
+    return create_page_in_data_source(
+        TARGET_DATA_SOURCE_ID,
+        properties,
     )
 
 
@@ -764,19 +794,16 @@ def build_result_properties(row):
         },
         "최종 편집 일시": {
             "date": {
-                "start": now_kst_iso()
+                "start": now_kst().isoformat()
             }
         },
     }
 
 
 def create_result_page(row):
-    sleep_api()
-    return notion.pages.create(
-        parent={
-            "database_id": RESULT_DB_ID
-        },
-        properties=build_result_properties(row),
+    return create_page_in_data_source(
+        RESULT_DATA_SOURCE_ID,
+        build_result_properties(row),
     )
 
 
@@ -824,8 +851,8 @@ def main():
     print("Notion 프로젝트 통합 시작")
     print("======================================")
 
-    print("[INFO] 통합 DB schema 조회")
-    target_schema = retrieve_database_schema(TARGET_DB_ID)
+    print("[INFO] 통합 Data Source schema 조회")
+    target_schema = retrieve_data_source_schema(TARGET_DATA_SOURCE_ID)
 
     print("[INFO] 통합 DB 기존 페이지 조회")
     existing_target_pages = get_existing_target_pages(target_schema)
@@ -834,12 +861,12 @@ def main():
     result_rows = []
 
     for source_db in SOURCE_DBS:
-        source_db_id = source_db["id"]
+        source_data_source_id = source_db["id"]
         team_name = source_db["team"]
 
         row = {
             "team_name": team_name,
-            "source_db_id": source_db_id,
+            "source_db_id": source_data_source_id,
             "count": 0,
             "added": 0,
             "updated": 0,
@@ -849,26 +876,23 @@ def main():
 
         print("--------------------------------------")
         print(f"[INFO] 원본 DB: {team_name}")
-        print(f"[INFO] 원본 DB ID: {source_db_id}")
+        print(f"[INFO] 원본 Data Source ID: {source_data_source_id}")
 
         try:
-            source_pages = query_all_pages(source_db_id)
+            source_pages = query_all_pages(source_data_source_id)
 
         except APIResponseError as e:
             if is_object_not_found_error(e):
                 print(
-                    f"[WARN] 접근 불가 또는 공유 안 됨: {team_name} / "
-                    f"{source_db_id}"
+                    f"[WARN] 접근 불가 또는 공유 안 됨: "
+                    f"{team_name} / {source_data_source_id}"
                 )
-
-                # 삭제되었거나 공유 안 된 DB는 0건으로 표시하고 다음 DB로 넘어감
                 result_rows.append(row)
                 continue
 
             raise
 
         row["count"] = len(source_pages)
-
         print(f"[INFO] 원본 페이지 수: {row['count']}")
 
         for source_page in source_pages:
@@ -882,8 +906,8 @@ def main():
                 desired_props = build_integrated_properties(
                     source_page=source_page,
                     target_schema=target_schema,
-                    source_db_id=source_db_id,
-                    source_db_name=team_name,
+                    source_data_source_id=source_data_source_id,
+                    source_data_source_name=team_name,
                 )
 
                 if not desired_props:
@@ -907,7 +931,6 @@ def main():
                         )
 
                         row["updated"] += 1
-
                     else:
                         row["skipped"] += 1
 
@@ -922,7 +945,10 @@ def main():
                     row["added"] += 1
 
             except Exception as e:
-                print(f"[WARN] 페이지 처리 실패: {team_name} / {source_page_id} / {e}")
+                print(
+                    f"[WARN] 페이지 처리 실패: "
+                    f"{team_name} / {source_page_id} / {e}"
+                )
                 row["skipped"] += 1
                 continue
 
