@@ -111,7 +111,7 @@ SOURCE_DBS = [
     {"id": "366cbb1d-cbaa-807a-97dd-000b3aca14a1", "team": "원가팀"},
     {"id": "366cbb1d-cbaa-806c-a5b9-000b40f6348b", "team": "기술영업팀"},
     {"id": "366cbb1d-cbaa-8066-bde5-000bbc28496e", "team": "설비기술팀"},
-    {"id": "366cbb1d-cbaa-80b7-98ba-000bbd1f329c", "team": "한국생산팀"},
+    {"id": "366cbb1d-cbaa-80b7-98ba-000bbd1f329c", "team": "합금생산팀"},
     {"id": "366cbb1d-cbaa-8097-91ac-000baf3183db", "team": "대구가공생산팀"},
     {"id": "366cbb1d-cbaa-806a-921b-000b65089f3d", "team": "대구품질경영팀"},
     {"id": "366cbb1d-cbaa-80fe-b40e-000b174d2241", "team": "소재개발팀"},
@@ -183,6 +183,21 @@ def get_title_property_name(schema):
     return None
 
 
+def get_latest_edited_time_from_pages(pages):
+    latest_edited_time = None
+
+    for page in pages:
+        page_last_edited_time = page.get("last_edited_time")
+
+        if not page_last_edited_time:
+            continue
+
+        if latest_edited_time is None or page_last_edited_time > latest_edited_time:
+            latest_edited_time = page_last_edited_time
+
+    return latest_edited_time
+
+
 # =========================================================
 # Data Source 조회 함수
 # =========================================================
@@ -194,7 +209,6 @@ def retrieve_data_source_schema(data_source_id):
         ds = notion.data_sources.retrieve(data_source_id=data_source_id)
         return ds.get("properties", {})
 
-    # 구버전 SDK 대비 예비 처리
     db = notion.databases.retrieve(database_id=data_source_id)
     return db.get("properties", {})
 
@@ -204,29 +218,29 @@ def query_all_pages(data_source_id):
     start_cursor = None
 
     while True:
-        payload = {
-            "data_source_id": data_source_id,
-            "page_size": 100,
-        }
-
-        if start_cursor:
-            payload["start_cursor"] = start_cursor
-
-        sleep_api()
-
         if hasattr(notion, "data_sources"):
+            payload = {
+                "data_source_id": data_source_id,
+                "page_size": 100,
+            }
+
+            if start_cursor:
+                payload["start_cursor"] = start_cursor
+
+            sleep_api()
             response = notion.data_sources.query(**payload)
+
         else:
-            # 구버전 SDK 대비 예비 처리
-            legacy_payload = {
+            payload = {
                 "database_id": data_source_id,
                 "page_size": 100,
             }
 
             if start_cursor:
-                legacy_payload["start_cursor"] = start_cursor
+                payload["start_cursor"] = start_cursor
 
-            response = notion.databases.query(**legacy_payload)
+            sleep_api()
+            response = notion.databases.query(**payload)
 
         results.extend(response.get("results", []))
 
@@ -593,7 +607,7 @@ def build_integrated_properties(
         if prop:
             desired_props[source_db_name_prop_name] = prop
 
-    # 7) 원본 페이지의 최종 편집 일시를 내가 만든 Date 속성에 저장
+    # 7) 원본 페이지의 최종 편집 일시를 통합 DB의 Date 속성에 저장
     last_edited_time_prop_name = get_first_existing_prop_name(
         target_schema,
         LAST_EDITED_TIME_PROP_CANDIDATES
@@ -733,7 +747,6 @@ def create_page_in_data_source(data_source_id, properties):
             properties=properties,
         )
     except Exception:
-        # 일부 SDK / 워크스페이스에서는 database_id parent가 아직 동작할 수 있음
         return notion.pages.create(
             parent={
                 "database_id": data_source_id
@@ -762,7 +775,7 @@ def update_target_page(page_id, properties):
 # =========================================================
 
 def build_result_properties(row):
-    return {
+    props = {
         "날짜": {
             "date": {
                 "start": today_kst_date()
@@ -792,12 +805,18 @@ def build_result_properties(row):
         "삭제": {
             "number": safe_int(row.get("deleted"))
         },
-        "최종 편집 일시": {
-            "date": {
-                "start": now_kst().isoformat()
-            }
-        },
     }
+
+    latest_edited_time = row.get("latest_edited_time")
+
+    if latest_edited_time:
+        props["최종 편집 일시"] = {
+            "date": {
+                "start": latest_edited_time
+            }
+        }
+
+    return props
 
 
 def create_result_page(row):
@@ -825,7 +844,7 @@ def print_result_table(result_rows):
     print("======================================")
     print("프로젝트 통합 결과")
     print("======================================")
-    print("팀명 | 프로젝트 수 | 추가 | 수정 | 건너뜀 | 삭제")
+    print("팀명 | 프로젝트 수 | 추가 | 수정 | 건너뜀 | 삭제 | 최신 편집 일시")
     print("--------------------------------------")
 
     for row in result_rows:
@@ -835,7 +854,8 @@ def print_result_table(result_rows):
             f"{row.get('added', 0)} | "
             f"{row.get('updated', 0)} | "
             f"{row.get('skipped', 0)} | "
-            f"{row.get('deleted', 0)}"
+            f"{row.get('deleted', 0)} | "
+            f"{row.get('latest_edited_time') or ''}"
         )
 
     print("======================================")
@@ -872,6 +892,7 @@ def main():
             "updated": 0,
             "skipped": 0,
             "deleted": 0,
+            "latest_edited_time": None,
         }
 
         print("--------------------------------------")
@@ -893,7 +914,10 @@ def main():
             raise
 
         row["count"] = len(source_pages)
+        row["latest_edited_time"] = get_latest_edited_time_from_pages(source_pages)
+
         print(f"[INFO] 원본 페이지 수: {row['count']}")
+        print(f"[INFO] 최신 편집 일시: {row['latest_edited_time'] or ''}")
 
         for source_page in source_pages:
             source_page_id = source_page.get("id")
