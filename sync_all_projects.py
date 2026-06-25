@@ -1,6 +1,7 @@
 import os
 import time
 import logging
+import traceback
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -24,8 +25,11 @@ TOKEN = os.environ["NOTION_TOKEN"]
 # 통합 프로젝트 Data Source ID
 TARGET_DATA_SOURCE_ID = "395cbb1d-cbaa-829c-a5a4-878f6a7b9b7d"
 
-# 실행 결과 저장 Data Source ID
+# 팀별 취합 결과 저장 Data Source ID
 RESULT_DATA_SOURCE_ID = "389cbb1d-cbaa-801b-9855-000b71234b6f"
+
+# GitHub 실행 결과 저장 Data Source ID
+RUN_LOG_DATA_SOURCE_ID = "38acbb1dcbaa8014aaced283d90a9030"
 
 # 테스트할 때만 숫자 입력. 전체 실행은 None.
 TEST_LIMIT_PER_DB = None
@@ -36,6 +40,38 @@ API_SLEEP_SEC = 0.05
 KST = ZoneInfo("Asia/Seoul")
 
 notion = Client(auth=TOKEN)
+
+
+# =========================================================
+# 실행 로그 저장용
+# =========================================================
+
+REPORT_LINES = []
+WARNING_LINES = []
+
+
+def log_info(message):
+    line = f"[INFO] {message}"
+    print(line)
+    REPORT_LINES.append(line)
+
+
+def log_warn(message):
+    line = f"[WARN] {message}"
+    print(line)
+    REPORT_LINES.append(line)
+    WARNING_LINES.append(line)
+
+
+def log_error(message):
+    line = f"[ERROR] {message}"
+    print(line)
+    REPORT_LINES.append(line)
+
+
+def log_plain(message=""):
+    print(message)
+    REPORT_LINES.append(message)
 
 
 # =========================================================
@@ -153,6 +189,10 @@ def now_kst():
 
 def today_kst_date():
     return now_kst().date().isoformat()
+
+
+def now_kst_text():
+    return now_kst().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def safe_int(value):
@@ -510,7 +550,6 @@ def build_integrated_properties(
     target_title_prop_name = get_title_property_name(target_schema)
     source_title_prop_name = get_title_property_name(source_props)
 
-    # 1) 제목 속성
     if target_title_prop_name and source_title_prop_name:
         source_title_prop = source_props.get(source_title_prop_name)
         title_text = plain_text_from_title(source_title_prop) or "제목 없음"
@@ -525,7 +564,6 @@ def build_integrated_properties(
             ]
         }
 
-    # 2) 같은 이름 / 같은 타입 속성 복사
     for prop_name, source_prop in source_props.items():
         if prop_name in EXCLUDED_PROPERTIES:
             continue
@@ -555,7 +593,6 @@ def build_integrated_properties(
         if converted is not None:
             desired_props[prop_name] = converted
 
-    # 3) 원본 page ID
     source_page_id_prop_name = get_first_existing_prop_name(
         target_schema,
         SOURCE_PAGE_ID_PROP_CANDIDATES
@@ -568,7 +605,6 @@ def build_integrated_properties(
         if prop:
             desired_props[source_page_id_prop_name] = prop
 
-    # 4) 원본 Data Source ID
     source_db_id_prop_name = get_first_existing_prop_name(
         target_schema,
         SOURCE_DB_ID_PROP_CANDIDATES
@@ -581,7 +617,6 @@ def build_integrated_properties(
         if prop:
             desired_props[source_db_id_prop_name] = prop
 
-    # 5) 원본 URL
     source_url_prop_name = get_first_existing_prop_name(
         target_schema,
         SOURCE_URL_PROP_CANDIDATES
@@ -594,7 +629,6 @@ def build_integrated_properties(
         if prop:
             desired_props[source_url_prop_name] = prop
 
-    # 6) 팀명 / 원본 DB명
     source_db_name_prop_name = get_first_existing_prop_name(
         target_schema,
         SOURCE_DB_NAME_PROP_CANDIDATES
@@ -607,7 +641,6 @@ def build_integrated_properties(
         if prop:
             desired_props[source_db_name_prop_name] = prop
 
-    # 7) 원본 페이지의 최종 편집 일시를 통합 DB의 Date 속성에 저장
     last_edited_time_prop_name = get_first_existing_prop_name(
         target_schema,
         LAST_EDITED_TIME_PROP_CANDIDATES
@@ -736,31 +769,20 @@ def properties_changed(existing_page, desired_props):
 # 페이지 생성 / 수정 / 휴지통 처리
 # =========================================================
 
-def create_page_in_data_source(data_source_id, properties):
+def create_page_in_data_source(data_source_id, properties, children=None):
     sleep_api()
 
-    try:
-        return notion.pages.create(
-            parent={
-                "data_source_id": data_source_id
-            },
-            properties=properties,
-        )
+    payload = {
+        "parent": {
+            "data_source_id": data_source_id
+        },
+        "properties": properties,
+    }
 
-    except Exception as e1:
-        print(f"[WARN] data_source_id 방식 생성 실패: {e1}")
+    if children:
+        payload["children"] = children
 
-        try:
-            return notion.pages.create(
-                parent={
-                    "database_id": data_source_id
-                },
-                properties=properties,
-            )
-
-        except Exception as e2:
-            print(f"[ERROR] database_id 방식 생성도 실패: {e2}")
-            raise
+    return notion.pages.create(**payload)
 
 
 def create_target_page(properties):
@@ -787,20 +809,26 @@ def archive_page(page_id):
 
 
 # =========================================================
-# 결과 DB 저장
+# 팀별 취합 결과 DB 저장
 # =========================================================
 
-def build_result_properties(row):
-    props = {
-        "No": {
+def build_result_properties(row, result_schema):
+    props = {}
+
+    if "No" in result_schema:
+        props["No"] = {
             "number": safe_int(row.get("no"))
-        },
-        "날짜": {
+        }
+
+    if "날짜" in result_schema:
+        props["날짜"] = {
             "date": {
                 "start": today_kst_date()
             }
-        },
-        "팀명": {
+        }
+
+    if "팀명" in result_schema:
+        props["팀명"] = {
             "title": [
                 {
                     "text": {
@@ -808,87 +836,80 @@ def build_result_properties(row):
                     }
                 }
             ]
-        },
-        "프로젝트 수": {
+        }
+
+    if "프로젝트 수" in result_schema:
+        props["프로젝트 수"] = {
             "number": safe_int(row.get("count"))
-        },
-        "추가": {
+        }
+
+    if "추가" in result_schema:
+        props["추가"] = {
             "number": safe_int(row.get("added"))
-        },
-        "수정": {
+        }
+
+    if "수정" in result_schema:
+        props["수정"] = {
             "number": safe_int(row.get("updated"))
-        },
-        "미반영": {
+        }
+
+    if "미반영" in result_schema:
+        props["미반영"] = {
             "number": safe_int(row.get("skipped"))
-        },
-        "삭제": {
+        }
+
+    if "삭제" in result_schema:
+        props["삭제"] = {
             "number": safe_int(row.get("deleted"))
-        },
-    }
+        }
 
-    latest_edited_time = row.get("latest_edited_time")
-
-    if latest_edited_time:
+    if "최종 편집 일시" in result_schema and row.get("latest_edited_time"):
         props["최종 편집 일시"] = {
             "date": {
-                "start": latest_edited_time
+                "start": row.get("latest_edited_time")
             }
         }
 
     return props
 
 
-def create_result_page(row):
+def create_result_page(row, result_schema):
     return create_page_in_data_source(
         RESULT_DATA_SOURCE_ID,
-        build_result_properties(row),
+        build_result_properties(row, result_schema),
     )
 
 
 def save_result_rows_to_notion(result_rows):
-    """
-    안전 방식:
-    1) 기존 결과 페이지 조회
-    2) 새 결과 페이지를 먼저 전부 생성
-    3) 새 페이지 생성이 모두 성공하면 기존 결과 페이지를 휴지통 처리
-    """
+    log_info("팀별 취합 결과 DB schema 조회")
+    result_schema = retrieve_data_source_schema(RESULT_DATA_SOURCE_ID)
 
-    print("[INFO] 결과 DB 기존 페이지 조회")
+    log_info("팀별 취합 결과 DB 기존 페이지 조회")
     old_pages = query_all_pages(RESULT_DATA_SOURCE_ID)
-    print(f"[INFO] 결과 DB 기존 페이지 수: {len(old_pages)}")
+    log_info(f"팀별 취합 결과 DB 기존 페이지 수: {len(old_pages)}")
 
-    print("[INFO] 결과 DB 신규 페이지 생성 시작")
+    log_info("팀별 취합 결과 DB 신규 페이지 생성 시작")
 
     new_page_ids = []
 
     for index, row in enumerate(result_rows, start=1):
         row["no"] = index
 
-        try:
-            created = create_result_page(row)
-            new_page_id = created.get("id")
+        created = create_result_page(row, result_schema)
+        new_page_id = created.get("id")
 
-            if not new_page_id:
-                raise RuntimeError("생성된 결과 페이지 ID를 확인할 수 없습니다.")
+        if not new_page_id:
+            raise RuntimeError("생성된 팀별 취합 결과 페이지 ID를 확인할 수 없습니다.")
 
-            new_page_ids.append(new_page_id)
+        new_page_ids.append(new_page_id)
 
-            print(
-                f"[INFO] 결과 DB 생성 성공: "
-                f"{index} / {row.get('team_name')} / {new_page_id}"
-            )
+        log_info(
+            f"팀별 취합 결과 생성 성공: "
+            f"{index} / {row.get('team_name')} / {new_page_id}"
+        )
 
-        except Exception as e:
-            print(
-                f"[ERROR] 결과 DB 저장 실패: "
-                f"{index} / {row.get('team_name')} / {e}"
-            )
-            print("[ERROR] 새 결과 생성 실패로 기존 결과 DB는 삭제하지 않습니다.")
-            raise
-
-    print(f"[INFO] 결과 DB 신규 페이지 생성 완료: {len(new_page_ids)}건")
-
-    print("[INFO] 결과 DB 기존 페이지 삭제 시작")
+    log_info(f"팀별 취합 결과 신규 페이지 생성 완료: {len(new_page_ids)}건")
+    log_info("팀별 취합 결과 기존 페이지 삭제 시작")
 
     deleted_count = 0
 
@@ -904,12 +925,154 @@ def save_result_rows_to_notion(result_rows):
         try:
             archive_page(page_id)
             deleted_count += 1
-
         except Exception as e:
-            print(f"[WARN] 결과 DB 기존 페이지 삭제 실패: {page_id} / {e}")
+            log_warn(f"팀별 취합 결과 기존 페이지 삭제 실패: {page_id} / {e}")
             continue
 
-    print(f"[INFO] 결과 DB 기존 페이지 삭제 완료: {deleted_count}건")
+    log_info(f"팀별 취합 결과 기존 페이지 삭제 완료: {deleted_count}건")
+
+
+# =========================================================
+# GitHub 실행 결과 DB 저장
+# =========================================================
+
+def chunk_text(text, limit=1800):
+    chunks = []
+    current = ""
+
+    for line in text.splitlines():
+        if len(current) + len(line) + 1 > limit:
+            chunks.append(current)
+            current = line
+        else:
+            current += ("\n" if current else "") + line
+
+    if current:
+        chunks.append(current)
+
+    return chunks
+
+
+def make_report_children(summary_text, detail_text):
+    children = [
+        {
+            "object": "block",
+            "type": "heading_2",
+            "heading_2": {
+                "rich_text": [
+                    {
+                        "type": "text",
+                        "text": {
+                            "content": "실행 요약"
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "object": "block",
+            "type": "paragraph",
+            "paragraph": {
+                "rich_text": [
+                    {
+                        "type": "text",
+                        "text": {
+                            "content": summary_text[:1900]
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "object": "block",
+            "type": "heading_2",
+            "heading_2": {
+                "rich_text": [
+                    {
+                        "type": "text",
+                        "text": {
+                            "content": "상세 실행 내용"
+                        }
+                    }
+                ]
+            }
+        },
+    ]
+
+    for chunk in chunk_text(detail_text, limit=1800):
+        children.append(
+            {
+                "object": "block",
+                "type": "code",
+                "code": {
+                    "rich_text": [
+                        {
+                            "type": "text",
+                            "text": {
+                                "content": chunk
+                            }
+                        }
+                    ],
+                    "language": "plain text"
+                }
+            }
+        )
+
+    return children
+
+
+def build_run_log_properties(status, summary_text):
+    return {
+        "날짜": {
+            "date": {
+                "start": today_kst_date()
+            }
+        },
+        "결과": {
+            "title": [
+                {
+                    "text": {
+                        "content": summary_text[:100]
+                    }
+                }
+            ]
+        },
+        "상태": {
+            "status": {
+                "name": status
+            }
+        },
+    }
+
+
+def save_run_log_to_notion(status, summary_text, detail_text):
+    try:
+        children = make_report_children(summary_text, detail_text)
+
+        create_page_in_data_source(
+            RUN_LOG_DATA_SOURCE_ID,
+            build_run_log_properties(status, summary_text),
+            children=children,
+        )
+
+        print("[INFO] GitHub 실행 결과 Notion DB 저장 완료")
+
+    except Exception as e:
+        print(f"[ERROR] GitHub 실행 결과 Notion DB 저장 실패: {e}")
+
+
+def make_success_summary(result_rows):
+    total_teams = len(result_rows)
+    total_projects = sum(safe_int(row.get("count")) for row in result_rows)
+    total_added = sum(safe_int(row.get("added")) for row in result_rows)
+    total_updated = sum(safe_int(row.get("updated")) for row in result_rows)
+    total_skipped = sum(safe_int(row.get("skipped")) for row in result_rows)
+
+    return (
+        f"프로젝트 통합 완료: {total_teams}개 팀, "
+        f"{total_projects}개 프로젝트 취합, "
+        f"추가 {total_added}건, 수정 {total_updated}건, 미반영 {total_skipped}건"
+    )
 
 
 # =========================================================
@@ -917,15 +1080,15 @@ def save_result_rows_to_notion(result_rows):
 # =========================================================
 
 def print_result_table(result_rows):
-    print("")
-    print("======================================")
-    print("프로젝트 통합 결과")
-    print("======================================")
-    print("No | 팀명 | 프로젝트 수 | 추가 | 수정 | 미반영 | 삭제 | 최신 편집 일시")
-    print("--------------------------------------")
+    log_plain("")
+    log_plain("======================================")
+    log_plain("프로젝트 통합 결과")
+    log_plain("======================================")
+    log_plain("No | 팀명 | 프로젝트 수 | 추가 | 수정 | 미반영 | 삭제 | 최신 편집 일시")
+    log_plain("--------------------------------------")
 
     for index, row in enumerate(result_rows, start=1):
-        print(
+        log_plain(
             f"{index} | "
             f"{row.get('team_name', '')} | "
             f"{row.get('count', 0)} | "
@@ -936,25 +1099,25 @@ def print_result_table(result_rows):
             f"{row.get('latest_edited_time') or ''}"
         )
 
-    print("======================================")
-    print("")
+    log_plain("======================================")
+    log_plain("")
 
 
 # =========================================================
-# 메인
+# 메인 처리
 # =========================================================
 
-def main():
-    print("======================================")
-    print("Notion 프로젝트 통합 시작")
-    print("======================================")
+def run_project_sync():
+    log_plain("======================================")
+    log_plain("Notion 프로젝트 통합 시작")
+    log_plain("======================================")
 
-    print("[INFO] 통합 Data Source schema 조회")
+    log_info("통합 Data Source schema 조회")
     target_schema = retrieve_data_source_schema(TARGET_DATA_SOURCE_ID)
 
-    print("[INFO] 통합 DB 기존 페이지 조회")
+    log_info("통합 DB 기존 페이지 조회")
     existing_target_pages = get_existing_target_pages(target_schema)
-    print(f"[INFO] 기존 통합 페이지 수: {len(existing_target_pages)}")
+    log_info(f"기존 통합 페이지 수: {len(existing_target_pages)}")
 
     result_rows = []
 
@@ -974,17 +1137,17 @@ def main():
             "latest_edited_time": None,
         }
 
-        print("--------------------------------------")
-        print(f"[INFO] 원본 DB: {team_name}")
-        print(f"[INFO] 원본 Data Source ID: {source_data_source_id}")
+        log_plain("--------------------------------------")
+        log_info(f"원본 DB: {team_name}")
+        log_info(f"원본 Data Source ID: {source_data_source_id}")
 
         try:
             source_pages = query_all_pages(source_data_source_id)
 
         except APIResponseError as e:
             if is_object_not_found_error(e):
-                print(
-                    f"[WARN] 접근 불가 또는 공유 안 됨: "
+                log_warn(
+                    f"접근 불가 또는 공유 안 됨: "
                     f"{team_name} / {source_data_source_id}"
                 )
                 result_rows.append(row)
@@ -995,8 +1158,8 @@ def main():
         row["count"] = len(source_pages)
         row["latest_edited_time"] = get_latest_edited_time_from_pages(source_pages)
 
-        print(f"[INFO] 원본 페이지 수: {row['count']}")
-        print(f"[INFO] 최신 편집 일시: {row['latest_edited_time'] or ''}")
+        log_info(f"원본 페이지 수: {row['count']}")
+        log_info(f"최신 편집 일시: {row['latest_edited_time'] or ''}")
 
         for source_page in source_pages:
             source_page_id = source_page.get("id")
@@ -1048,8 +1211,8 @@ def main():
                     row["added"] += 1
 
             except Exception as e:
-                print(
-                    f"[WARN] 페이지 처리 실패: "
+                log_warn(
+                    f"페이지 처리 실패: "
                     f"{team_name} / {source_page_id} / {e}"
                 )
                 row["skipped"] += 1
@@ -1059,13 +1222,45 @@ def main():
 
     print_result_table(result_rows)
 
-    print("[INFO] 실행 결과 Notion DB 저장 시작")
+    log_info("팀별 취합 결과 Notion DB 저장 시작")
     save_result_rows_to_notion(result_rows)
-    print("[INFO] 실행 결과 Notion DB 저장 완료")
+    log_info("팀별 취합 결과 Notion DB 저장 완료")
 
-    print("======================================")
-    print("Notion 프로젝트 통합 완료")
-    print("======================================")
+    log_plain("======================================")
+    log_plain("Notion 프로젝트 통합 완료")
+    log_plain("======================================")
+
+    return result_rows
+
+
+def main():
+    result_rows = []
+
+    try:
+        result_rows = run_project_sync()
+
+        if WARNING_LINES:
+            status = "확인필요"
+            summary_text = make_success_summary(result_rows) + f" / 확인필요 {len(WARNING_LINES)}건"
+        else:
+            status = "성공"
+            summary_text = make_success_summary(result_rows)
+
+        detail_text = "\n".join(REPORT_LINES)
+        save_run_log_to_notion(status, summary_text, detail_text)
+
+    except Exception:
+        error_text = traceback.format_exc()
+
+        log_error("프로젝트 통합 실행 실패")
+        log_error(error_text)
+
+        summary_text = f"프로젝트 통합 실패: {now_kst_text()}"
+        detail_text = "\n".join(REPORT_LINES) + "\n\n" + error_text
+
+        save_run_log_to_notion("실패", summary_text, detail_text)
+
+        raise
 
 
 if __name__ == "__main__":
