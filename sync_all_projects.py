@@ -769,12 +769,12 @@ def properties_changed(existing_page, desired_props):
 # 페이지 생성 / 수정 / 휴지통 처리
 # =========================================================
 
-def create_page_in_database(database_id, properties, children=None):
+def create_page_in_data_source(data_source_id, properties, children=None):
     sleep_api()
 
     payload = {
         "parent": {
-            "database_id": database_id
+            "data_source_id": data_source_id
         },
         "properties": properties,
     }
@@ -999,7 +999,12 @@ def make_report_children(summary_text, detail_text):
         },
     ]
 
-    for chunk in chunk_text(detail_text, limit=1800):
+    chunks = chunk_text(detail_text, limit=1800)
+
+    # Notion pages.create children 개수 제한 방지
+    max_code_blocks = 90
+
+    for chunk in chunks[:max_code_blocks]:
         children.append(
             {
                 "object": "block",
@@ -1014,6 +1019,24 @@ def make_report_children(summary_text, detail_text):
                         }
                     ],
                     "language": "plain text"
+                }
+            }
+        )
+
+    if len(chunks) > max_code_blocks:
+        children.append(
+            {
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [
+                        {
+                            "type": "text",
+                            "text": {
+                                "content": f"상세 로그가 길어 일부만 기록했습니다. 전체 코드 블록 수: {len(chunks)}"
+                            }
+                        }
+                    ]
                 }
             }
         )
@@ -1049,8 +1072,8 @@ def save_run_log_to_notion(status, summary_text, detail_text):
     try:
         children = make_report_children(summary_text, detail_text)
 
-        create_page_in_database(
-            RUN_LOG_DATABASE_ID,
+        create_page_in_data_source(
+            RUN_LOG_DATA_SOURCE_ID,
             build_run_log_properties(status, summary_text),
             children=children,
         )
@@ -1111,6 +1134,8 @@ def run_project_sync():
     log_plain("======================================")
     log_plain("Notion 프로젝트 통합 시작")
     log_plain("======================================")
+
+    log_info(f"RUN_LOG_DATA_SOURCE_ID = {RUN_LOG_DATA_SOURCE_ID}")
 
     log_info("통합 Data Source schema 조회")
     target_schema = retrieve_data_source_schema(TARGET_DATA_SOURCE_ID)
