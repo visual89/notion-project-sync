@@ -29,7 +29,7 @@ TARGET_DATA_SOURCE_ID = "395cbb1d-cbaa-829c-a5a4-878f6a7b9b7d"
 RESULT_DATA_SOURCE_ID = "389cbb1d-cbaa-801b-9855-000b71234b6f"
 
 # GitHub 실행 결과 저장 Data Source ID
-RUN_LOG_DATABASE_ID = "38acbb1dcbaa8014aaced283d90a9030"
+RUN_LOG_DATA_SOURCE_ID = "38acbb1d-cbaa-801e-9ea7-000beb5a8e28"
 
 # 테스트할 때만 숫자 입력. 전체 실행은 None.
 TEST_LIMIT_PER_DB = None
