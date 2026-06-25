@@ -1271,7 +1271,7 @@ def main():
             status = "성공"
             summary_text = make_success_summary(result_rows)
 
-        detail_text = "\n".join(REPORT_LINES)
+        detail_text = make_result_table_text(result_rows)
         save_run_log_to_notion(status, summary_text, detail_text)
 
     except Exception:
