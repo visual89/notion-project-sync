@@ -29,7 +29,7 @@ TARGET_DATA_SOURCE_ID = "395cbb1d-cbaa-829c-a5a4-878f6a7b9b7d"
 RESULT_DATA_SOURCE_ID = "389cbb1d-cbaa-801b-9855-000b71234b6f"
 
 # GitHub 실행 결과 저장 Data Source ID
-RUN_LOG_DATA_SOURCE_ID = "38acbb1d-cbaa-801e-9ea7-000beb5a8e28"
+RUN_LOG_DATABASE_ID = "38acbb1dcbaa8014aaced283d90a9030"
 
 # 테스트할 때만 숫자 입력. 전체 실행은 None.
 TEST_LIMIT_PER_DB = None
@@ -769,12 +769,12 @@ def properties_changed(existing_page, desired_props):
 # 페이지 생성 / 수정 / 휴지통 처리
 # =========================================================
 
-def create_page_in_data_source(data_source_id, properties, children=None):
+def create_page_in_database(database_id, properties, children=None):
     sleep_api()
 
     payload = {
         "parent": {
-            "data_source_id": data_source_id
+            "database_id": database_id
         },
         "properties": properties,
     }
@@ -1049,8 +1049,8 @@ def save_run_log_to_notion(status, summary_text, detail_text):
     try:
         children = make_report_children(summary_text, detail_text)
 
-        create_page_in_data_source(
-            RUN_LOG_DATA_SOURCE_ID,
+        create_page_in_database(
+            RUN_LOG_DATABASE_ID,
             build_run_log_properties(status, summary_text),
             children=children,
         )
