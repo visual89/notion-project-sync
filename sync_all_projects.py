@@ -111,7 +111,7 @@ SOURCE_DBS = [
     {"id": "366cbb1d-cbaa-807a-97dd-000b3aca14a1", "team": "원가팀"},
     {"id": "366cbb1d-cbaa-806c-a5b9-000b40f6348b", "team": "기술영업팀"},
     {"id": "366cbb1d-cbaa-8066-bde5-000bbc28496e", "team": "설비기술팀"},
-    {"id": "366cbb1d-cbaa-80b7-98ba-000bbd1f329c", "team": "한국생산팀"},
+    {"id": "366cbb1d-cbaa-80b7-98ba-000bbd1f329c", "team": "합금생산팀"},
     {"id": "366cbb1d-cbaa-8097-91ac-000baf3183db", "team": "대구가공생산팀"},
     {"id": "366cbb1d-cbaa-806a-921b-000b65089f3d", "team": "대구품질경영팀"},
     {"id": "366cbb1d-cbaa-80fe-b40e-000b174d2241", "team": "소재개발팀"},
