@@ -1,12 +1,14 @@
 import os
 import time
+import random
 import logging
 import traceback
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import httpx
 from notion_client import Client
-from notion_client.errors import APIResponseError
+from notion_client.errors import APIResponseError, RequestTimeoutError
 
 
 # =========================================================
@@ -37,9 +39,23 @@ TEST_LIMIT_PER_DB = None
 # Notion API 과호출 방지
 API_SLEEP_SEC = 0.05
 
+# =========================================================
+# Notion 타임아웃 / 재시도 설정 (환경변수로 조정 가능)
+# =========================================================
+
+# 단일 요청 타임아웃(초). 기본값보다 넉넉하게.
+NOTION_TIMEOUT_SECONDS = float(os.getenv("NOTION_TIMEOUT_SECONDS", "60"))
+# 일시 오류 시 최대 재시도 횟수
+NOTION_MAX_RETRIES = int(os.getenv("NOTION_MAX_RETRIES", "6"))
+# 지수 백오프 기준 시간(초). 대기 = BASE ** attempt + jitter
+NOTION_BACKOFF_BASE = float(os.getenv("NOTION_BACKOFF_BASE", "1.5"))
+# 백오프 최대 대기(초) 상한
+NOTION_BACKOFF_MAX = float(os.getenv("NOTION_BACKOFF_MAX", "30"))
+
 KST = ZoneInfo("Asia/Seoul")
 
-notion = Client(auth=TOKEN)
+# 핵심 변경: timeout 지정 (기존엔 기본값이라 ReadTimeout에 매우 취약했음)
+notion = Client(auth=TOKEN, timeout=NOTION_TIMEOUT_SECONDS)
 
 
 # =========================================================
@@ -72,6 +88,85 @@ def log_error(message):
 def log_plain(message=""):
     print(message)
     REPORT_LINES.append(message)
+
+
+# =========================================================
+# Notion 호출 공용 재시도 wrapper
+# =========================================================
+
+# 재시도 대상이 되는 일시적 HTTP 상태코드
+_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+# 재시도 대상이 되는 예외 타입(타임아웃/연결 계열)
+_RETRYABLE_EXC = (
+    RequestTimeoutError,
+    httpx.ReadTimeout,
+    httpx.ConnectTimeout,
+    httpx.WriteTimeout,
+    httpx.PoolTimeout,
+    httpx.RemoteProtocolError,
+    httpx.ConnectError,
+)
+
+
+def _get_retry_after_seconds(error):
+    """APIResponseError에서 Retry-After 헤더를 추출(있으면)."""
+    try:
+        headers = getattr(getattr(error, "response", None), "headers", None)
+        if headers:
+            retry_after = headers.get("Retry-After") or headers.get("retry-after")
+            if retry_after:
+                return float(retry_after)
+    except Exception:
+        pass
+    return None
+
+
+def call_notion_with_retry(fn, *, op_name="notion-op"):
+    """
+    Notion API 호출을 일시 오류에 대해 지수 백오프로 재시도한다.
+    - 타임아웃/연결 오류
+    - 429(Rate Limit) 및 5xx 서버 오류  (429는 Retry-After 존중)
+    그 외 오류(object_not_found, validation 등)는 즉시 raise.
+    """
+    last_exc = None
+
+    for attempt in range(1, NOTION_MAX_RETRIES + 1):
+        try:
+            return fn()
+
+        except _RETRYABLE_EXC as e:
+            last_exc = e
+            wait = min(
+                NOTION_BACKOFF_BASE ** attempt + random.uniform(0, 0.5),
+                NOTION_BACKOFF_MAX,
+            )
+
+        except APIResponseError as e:
+            status = getattr(e, "status", None)
+            if status not in _RETRYABLE_STATUS:
+                raise  # 비재시도성 오류는 그대로 올림
+            last_exc = e
+            retry_after = _get_retry_after_seconds(e)
+            if retry_after is not None:
+                wait = min(retry_after + random.uniform(0, 0.5), NOTION_BACKOFF_MAX)
+            else:
+                wait = min(
+                    NOTION_BACKOFF_BASE ** attempt + random.uniform(0, 0.5),
+                    NOTION_BACKOFF_MAX,
+                )
+
+        if attempt >= NOTION_MAX_RETRIES:
+            break
+
+        log_warn(
+            f"[{op_name}] 일시 오류, 재시도 {attempt}/{NOTION_MAX_RETRIES} "
+            f"({wait:.2f}s 대기): {type(last_exc).__name__}: {last_exc}"
+        )
+        time.sleep(wait)
+
+    log_error(f"[{op_name}] 재시도 모두 실패: {type(last_exc).__name__}: {last_exc}")
+    raise last_exc
 
 
 # =========================================================
@@ -239,17 +334,23 @@ def get_latest_edited_time_from_pages(pages):
 
 
 # =========================================================
-# Data Source 조회 함수
+# Data Source 조회 함수 (재시도 적용)
 # =========================================================
 
 def retrieve_data_source_schema(data_source_id):
     sleep_api()
 
     if hasattr(notion, "data_sources"):
-        ds = notion.data_sources.retrieve(data_source_id=data_source_id)
+        ds = call_notion_with_retry(
+            lambda: notion.data_sources.retrieve(data_source_id=data_source_id),
+            op_name="data_sources.retrieve",
+        )
         return ds.get("properties", {})
 
-    db = notion.databases.retrieve(database_id=data_source_id)
+    db = call_notion_with_retry(
+        lambda: notion.databases.retrieve(database_id=data_source_id),
+        op_name="databases.retrieve",
+    )
     return db.get("properties", {})
 
 
@@ -268,7 +369,10 @@ def query_all_pages(data_source_id):
                 payload["start_cursor"] = start_cursor
 
             sleep_api()
-            response = notion.data_sources.query(**payload)
+            response = call_notion_with_retry(
+                lambda p=payload: notion.data_sources.query(**p),
+                op_name="data_sources.query",
+            )
 
         else:
             payload = {
@@ -280,7 +384,10 @@ def query_all_pages(data_source_id):
                 payload["start_cursor"] = start_cursor
 
             sleep_api()
-            response = notion.databases.query(**payload)
+            response = call_notion_with_retry(
+                lambda p=payload: notion.databases.query(**p),
+                op_name="databases.query",
+            )
 
         results.extend(response.get("results", []))
 
@@ -692,7 +799,7 @@ def properties_changed(existing_page, desired_props):
 
 
 # =========================================================
-# 페이지 생성 / 수정 / 휴지통 처리
+# 페이지 생성 / 수정 / 휴지통 처리 (재시도 + 중복생성 방지)
 # =========================================================
 
 def create_page_in_data_source(data_source_id, properties, children=None):
@@ -708,7 +815,10 @@ def create_page_in_data_source(data_source_id, properties, children=None):
     if children:
         payload["children"] = children
 
-    return notion.pages.create(**payload)
+    return call_notion_with_retry(
+        lambda: notion.pages.create(**payload),
+        op_name="pages.create",
+    )
 
 
 def create_target_page(properties):
@@ -720,17 +830,17 @@ def create_target_page(properties):
 
 def update_target_page(page_id, properties):
     sleep_api()
-    return notion.pages.update(
-        page_id=page_id,
-        properties=properties,
+    return call_notion_with_retry(
+        lambda: notion.pages.update(page_id=page_id, properties=properties),
+        op_name="pages.update",
     )
 
 
 def archive_page(page_id):
     sleep_api()
-    return notion.pages.update(
-        page_id=page_id,
-        archived=True,
+    return call_notion_with_retry(
+        lambda: notion.pages.update(page_id=page_id, archived=True),
+        op_name="pages.archive",
     )
 
 
@@ -793,15 +903,31 @@ def save_result_rows_to_notion(result_rows):
     log_info("팀별 취합 결과 DB 신규 페이지 생성 시작")
 
     new_page_ids = []
+    failed_rows = 0
 
     for index, row in enumerate(result_rows, start=1):
         row["no"] = index
 
-        created = create_result_page(row, result_schema)
+        try:
+            created = create_result_page(row, result_schema)
+        except Exception as e:
+            # 한 행이 끝까지 실패해도 전체를 중단하지 않고 계속 진행
+            failed_rows += 1
+            log_warn(
+                f"팀별 취합 결과 생성 실패(건너뜀): "
+                f"{index} / {row.get('team_name')} / {e}"
+            )
+            continue
+
         new_page_id = created.get("id")
 
         if not new_page_id:
-            raise RuntimeError("생성된 팀별 취합 결과 페이지 ID를 확인할 수 없습니다.")
+            failed_rows += 1
+            log_warn(
+                f"팀별 취합 결과 생성 응답에 page ID 없음(건너뜀): "
+                f"{index} / {row.get('team_name')}"
+            )
+            continue
 
         new_page_ids.append(new_page_id)
 
@@ -810,7 +936,20 @@ def save_result_rows_to_notion(result_rows):
             f"{index} / {row.get('team_name')} / {new_page_id}"
         )
 
-    log_info(f"팀별 취합 결과 신규 페이지 생성 완료: {len(new_page_ids)}건")
+    log_info(
+        f"팀별 취합 결과 신규 페이지 생성 완료: "
+        f"{len(new_page_ids)}건 성공 / {failed_rows}건 실패"
+    )
+
+    # 신규 생성이 하나도 안 됐다면, 기존 페이지를 지우면 데이터가 통째로 사라질 위험.
+    # 안전장치: 일부라도 실패가 있으면 기존 페이지 삭제는 건너뛴다.
+    if failed_rows > 0:
+        log_warn(
+            "신규 생성 중 실패가 있어 기존 페이지 삭제를 건너뜁니다. "
+            "(데이터 유실 방지)"
+        )
+        return
+
     log_info("팀별 취합 결과 기존 페이지 삭제 시작")
 
     deleted_count = 0
@@ -986,6 +1125,7 @@ def save_run_log_to_notion(status, summary_text, detail_text):
         print("[INFO] GitHub 실행 결과 Notion DB 저장 완료")
 
     except Exception as e:
+        # 여기서 예외를 다시 올리지 않음 (실행 결과 로그 저장 실패가 전체를 죽이지 않도록)
         print(f"[ERROR] GitHub 실행 결과 Notion DB 저장 실패: {e}")
 
 
