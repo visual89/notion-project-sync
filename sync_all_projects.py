@@ -54,8 +54,43 @@ NOTION_BACKOFF_MAX = float(os.getenv("NOTION_BACKOFF_MAX", "30"))
 
 KST = ZoneInfo("Asia/Seoul")
 
-# 핵심 변경: timeout 지정 (기존엔 기본값이라 ReadTimeout에 매우 취약했음)
-notion = Client(auth=TOKEN, timeout=NOTION_TIMEOUT_SECONDS)
+
+# =========================================================
+# Notion Client 생성 (버전별 timeout 인자 차이 흡수)
+# =========================================================
+#
+# notion-client 버전에 따라 timeout 지정 방식이 다르다.
+#  - 신버전: Client(auth=..., timeout=<초>)  또는 timeout_ms=<밀리초>
+#  - 구버전: timeout 인자 자체를 못 받음 (ClientOptions에 없음)
+# 따라서 여러 방식을 순서대로 시도하고, 다 안 되면 timeout 없이 생성한 뒤
+# 내부 httpx 클라이언트의 timeout을 직접 덮어쓴다.
+
+def _build_notion_client():
+    # 1) timeout(초) 인자 지원 버전
+    try:
+        return Client(auth=TOKEN, timeout=NOTION_TIMEOUT_SECONDS)
+    except TypeError:
+        pass
+
+    # 2) timeout_ms(밀리초) 인자 지원 버전
+    try:
+        return Client(auth=TOKEN, timeout_ms=int(NOTION_TIMEOUT_SECONDS * 1000))
+    except TypeError:
+        pass
+
+    # 3) 인자 미지원 구버전: 기본 생성 후 내부 httpx timeout을 직접 설정
+    client = Client(auth=TOKEN)
+    try:
+        inner = getattr(client, "client", None)  # httpx.Client
+        if inner is not None:
+            inner.timeout = httpx.Timeout(NOTION_TIMEOUT_SECONDS)
+    except Exception:
+        # 그래도 안 되면 라이브러리 기본 timeout으로 동작 (재시도 로직이 보완)
+        pass
+    return client
+
+
+notion = _build_notion_client()
 
 
 # =========================================================
